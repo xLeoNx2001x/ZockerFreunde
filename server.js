@@ -98,7 +98,6 @@ async function syncDiscordMember(discordId) {
   if (!guildId || !process.env.DISCORD_BOT_TOKEN) return null;
   try {
     const [member, roles] = await Promise.all([
-    const [member, roles] = await Promise.all([
       discordRequest(`/guilds/${guildId}/members/${discordId}`),
       discordRequest(`/guilds/${guildId}/roles`)
     ]);
