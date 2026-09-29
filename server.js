@@ -99,6 +99,7 @@ const germanDay = () => new Intl.DateTimeFormat('de-DE', {
 const levelFromXP = xp => Math.max(1, Math.floor(Math.sqrt(Math.max(0, Number(xp) || 0) / 100)) + 1);
 const levelStartXP = level => Math.max(0, Math.pow(Math.max(1, level - 1), 2) * 100);
 const levelNextXP = level => Math.pow(Math.max(1, level), 2) * 100;
+const chatXPForLevel = level => 5 * Math.pow(2, Math.max(0, Number(level) - 1));
 
 async function discordRequest(url) {
   const token = process.env.DISCORD_BOT_TOKEN;
@@ -222,6 +223,17 @@ app.get('/api/chat/public', async (req, res) => {
   const rows = await db.all(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM public_messages m JOIN users u ON u.id=m.user_id ORDER BY m.id DESC LIMIT 80`);
   res.json({ messages: rows.reverse() });
 });
+app.delete('/api/chat/public', requireAdmin, async (req, res) => {
+  try {
+    await db.exec('DELETE FROM public_messages');
+    io.emit('public_chat_cleared');
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('public_chat_clear:', e.message);
+    res.status(500).json({ error: 'Chat konnte nicht geleert werden.' });
+  }
+});
+
 app.get('/api/chat/private/:id', requireUser, async (req, res) => {
   const other = Number(req.params.id);
   const rows = await db.all(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM private_messages m JOIN users u ON u.id=m.sender_id WHERE (sender_id=$1 AND receiver_id=$2) OR (sender_id=$3 AND receiver_id=$4) ORDER BY m.id ASC LIMIT 200`, [req.user.id, other, other, req.user.id]);
@@ -390,14 +402,18 @@ io.use(async (socket, next) => {
 
 const online = new Map();
 io.on('connection', socket => {
-  if (socket.user) { online.set(socket.user.id, (online.get(socket.user.id) || 0) + 1); io.emit('presence', { userId: socket.user.id, status: 'online' }); }
+  if (socket.user) { online.set(socket.user.id, (online.get(socket.user.id) || 0) + 1); db.run('UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE id=$1',[socket.user.id]).catch(()=>{}); io.emit('presence', { userId: socket.user.id, status: 'online' }); }
   socket.on('public_message', async data => {
     try {
       if (!socket.user) return;
       const message = clean(data?.message).slice(0, 1000); if (!message) return;
       const info = await db.get('INSERT INTO public_messages(user_id,message) VALUES($1,$2) RETURNING id', [socket.user.id, message]);
       const row = await db.get(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM public_messages m JOIN users u ON u.id=m.user_id WHERE m.id=$1`, [info.id]);
-      await db.run('UPDATE users SET xp=xp+2,points=points+1,last_seen=CURRENT_TIMESTAMP WHERE id=$1', [socket.user.id]);
+      const current = await db.get('SELECT xp FROM users WHERE id=$1', [socket.user.id]);
+      const currentLevel = levelFromXP(current?.xp || 0);
+      const xpGain = chatXPForLevel(currentLevel);
+      await db.run('UPDATE users SET xp=xp+$1,points=points+1,last_seen=CURRENT_TIMESTAMP WHERE id=$2', [xpGain, socket.user.id]);
+      row.xp_gain = xpGain;
       io.emit('public_message', row);
     } catch (e) { console.error('public_message:', e.message); }
   });

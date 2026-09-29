@@ -1,4 +1,4 @@
-# Zockerfreunde 3.3 – Supabase / PostgreSQL
+# Zockerfreunde 3.4.1 – Supabase / PostgreSQL
 
 Die Website verwendet **PostgreSQL über Supabase** statt einer lokalen SQLite-Datei. Dadurch bleiben Accounts, XP, Level, Rangliste, Chats, Profile und Einstellungen auch nach Render-Restarts und neuen Deploys erhalten – ohne Render Persistent Disk.
 
@@ -42,3 +42,10 @@ Setze auf Render die Environment Variable `DISCORD_ADMIN_IDS` auf eine oder mehr
 Beispiel: `123456789012345678,987654321098765432`
 
 Admins sehen unter **Einstellungen → Server & Level bearbeiten** die Mitgliederverwaltung. Dort können Level gesetzt und Discord-Rollen über den Bot vergeben werden. Dafür benötigt der Discord-Bot die passenden Server-/Rollenrechte.
+
+
+## 3.4.1 Feinschliff
+- Aktive Mitglieder werden über `last_seen` und Socket-Verbindungen aktualisiert.
+- Öffentlicher Chat kann von konfigurierten Admins geleert werden.
+- Discord-Beitreten verwendet `DISCORD_INVITE_URL`.
+- Chat-XP startet bei 5 XP und verdoppelt sich pro erreichtem Level: 5, 10, 20, 40, ...

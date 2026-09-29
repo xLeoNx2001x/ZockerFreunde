@@ -32,7 +32,19 @@ async function load(){const d=await api('/api/me');me=d.user;const m=await api('
 function renderTop(){ $('#topUser').innerHTML=me?`<div class="user-mini"><i class="dot online"></i><img class="avatar" src="${esc(avatar(me))}"><b>${esc(me.global_name||me.username)}</b></div>`:`<a class="primary" href="/auth/discord">Mit Discord anmelden</a>`; }
 function renderHome(){const online=members.filter(isOnline).length;$('#page-home').innerHTML=`<div class="hero"><div class="eyebrow">DEINE GAMING COMMUNITY</div><h1>Gemeinsam spielen.<br><span class="gradient">Gemeinsam zocken.</span></h1><p>Zockerfreunde verbindet Gaming, Freunde und Community an einem Ort. Chatte, finde deine Freunde und sammle XP für die Community-Rangliste.</p><div class="actions">${me?`<button class="primary" onclick="go('chat')">Zum Community-Chat →</button>`:`<a class="primary" href="/auth/discord">Mit Discord starten →</a>`}<button class="secondary" onclick="go('leaderboard')">🏆 Rangliste ansehen</button></div></div><div class="stats"><div class="stat"><strong>${members.length}</strong><span>Mitglieder</span></div><div class="stat"><strong>${online}</strong><span>Gerade online</span></div><div class="stat"><strong>${members.reduce((a,b)=>a+b.points,0)}</strong><span>Community-Punkte</span></div><div class="stat"><strong>∞</strong><span>Gemeinsame Momente</span></div></div><div class="section-title"><h2>Aktive Mitglieder</h2><button class="secondary" onclick="go('members')">Alle ansehen</button></div><div class="grid">${members.filter(isOnline).slice(0,4).map(memberCard).join('')||'<div class="empty">Noch niemand online.</div>'}</div>`}
 function renderMembers(){ $('#page-members').innerHTML=`<div class="section-title"><div><h2>Mitglieder</h2><div class="eyebrow">ZOCKERFREUNDE COMMUNITY</div></div></div><input id="memberSearch" class="search" placeholder="Mitglied suchen ..."><div id="memberGrid" class="grid" style="margin-top:15px">${members.map(memberCard).join('')||'<div class="empty">Noch keine Mitglieder.</div>'}</div>`;$('#memberSearch').oninput=e=>{const q=e.target.value.toLowerCase();$('#memberGrid').innerHTML=members.filter(u=>(u.global_name||u.username).toLowerCase().includes(q)||displayRole(u).toLowerCase().includes(q)).map(memberCard).join('')||'<div class="empty">Kein Mitglied gefunden.</div>'}}
-function renderChat(){ $('#page-chat').innerHTML=`<div class="card chat-shell"><div class="chat-head"><h2>◈ Öffentlicher Chat</h2><small style="color:#7f869f">Alle angemeldeten Zockerfreunde können hier schreiben.</small></div><div id="publicMessages" class="messages"></div><form id="publicForm" class="composer"><input id="publicInput" maxlength="1000" placeholder="Nachricht schreiben ..." ${me?'':'disabled'}><button class="primary" ${me?'':'disabled'}>Senden</button></form></div>`;$('#publicForm').onsubmit=e=>{e.preventDefault();const i=$('#publicInput');if(i.value.trim()){socket?.emit('public_message',{message:i.value});i.value=''}};loadPublic();}
+async function renderChat(){
+  let isAdmin=false;
+  if(me){try{isAdmin=Boolean((await api('/api/admin/status')).isAdmin)}catch{}}
+  $('#page-chat').innerHTML=`<div class="card chat-shell"><div class="chat-head"><div><h2>◈ Öffentlicher Chat</h2><small style="color:#7f869f">Alle angemeldeten Zockerfreunde können hier schreiben.</small></div>${isAdmin?`<button class="secondary danger-btn" id="clearPublicChat">🗑 Chat leeren</button>`:''}</div><div id="publicMessages" class="messages"></div><form id="publicForm" class="composer"><input id="publicInput" maxlength="1000" placeholder="Nachricht schreiben ..." ${me?'':'disabled'}><button class="primary" ${me?'':'disabled'}>Senden</button></form></div>`;
+  $('#publicForm').onsubmit=e=>{e.preventDefault();const i=$('#publicInput');if(i.value.trim()){socket?.emit('public_message',{message:i.value});i.value=''}};
+  $('#clearPublicChat')?.addEventListener('click',clearPublicChat);
+  loadPublic();
+}
+async function clearPublicChat(){
+  if(!confirm('Möchtest du den öffentlichen Chat wirklich vollständig leeren? Diese Aktion kann nicht rückgängig gemacht werden.')) return;
+  try{await api('/api/chat/public',{method:'DELETE'});$('#publicMessages').innerHTML='';toast('Öffentlicher Chat wurde geleert.');}
+  catch(e){toast('Chat konnte nicht geleert werden.');}
+}
 async function loadPublic(){try{const d=await api('/api/chat/public');$('#publicMessages').innerHTML=d.messages.map(messageHTML).join('');scrollMsgs()}catch{}}
 function messageHTML(m){const mine=me&&m.user_id===me.id;return `<div class="msg ${mine?'me':''}"><img class="avatar" src="${esc(avatar(m))}"><div><div class="meta">${esc(m.global_name||m.username)} · ${esc(m.role)}</div><div class="bubble">${esc(m.message)}</div></div></div>`}
 function scrollMsgs(){const e=$('#publicMessages');if(e)e.scrollTop=e.scrollHeight}
@@ -159,8 +171,19 @@ async function saveAdminMember(id){
 async function saveBio(){await api('/api/profile',{method:'POST',body:JSON.stringify({bio:$('#bioInput').value})});const d=await api('/api/me');me=d.user;members=members.map(x=>x.id===me.id?me:x);toast('Profil gespeichert');renderMembers();renderHome()}
 async function setTheme(theme){document.body.classList.remove('light','dark');if(theme!=='neon')document.body.classList.add(theme);await api('/api/settings',{method:'POST',body:JSON.stringify({theme})});renderSettings()}
 async function logout(){await api('/auth/logout',{method:'POST'});location.reload()}
-function connectSocket(){if(socket)return;socket=io();socket.on('public_message',m=>{if(me&&m.user_id===me.id){me={...me,xp:me.xp+2,message_count:(me.message_count||0)+1};me.level=levelFromXPClient(me.xp);me.level_start_xp=levelStartXPClient(me.level);me.level_next_xp=levelNextXPClient(me.level);me.level_progress=Math.min(100,Math.max(0,((me.xp-me.level_start_xp)/(me.level_next_xp-me.level_start_xp))*100));members=members.map(u=>u.id===me.id?me:u);if($('#page-leaderboard')?.classList.contains('active'))renderLeaderboard();}const e=$('#publicMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollMsgs()}});socket.on('private_message',m=>{if(currentPrivate&&(m.sender_id===currentPrivate.id||m.receiver_id===currentPrivate.id)){const e=$('#privateMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollPrivate()}}});socket.on('presence',p=>{members=members.map(u=>u.id===p.userId?{...u,last_seen:p.status==='online'?new Date().toISOString():u.last_seen}:u);renderHome();if($('.page.active')?.id==='page-members')renderMembers()});}
-async function go(page,update=true){
+function refreshMembers(){
+  return api('/api/members').then(d=>{members=d.members;if(me){const fresh=members.find(u=>u.id===me.id);if(fresh)me=fresh;}renderHome();if($('.page.active')?.id==='page-members')renderMembers();if($('.page.active')?.id==='page-leaderboard')renderLeaderboard();}).catch(()=>{});
+}
+function connectSocket(){if(socket)return;socket=io();socket.on('public_message',m=>{
+  if(me&&m.user_id===me.id){me={...me,xp:me.xp+Number(m.xp_gain||0),message_count:(me.message_count||0)+1};me.level=levelFromXPClient(me.xp);me.level_start_xp=levelStartXPClient(me.level);me.level_next_xp=levelNextXPClient(me.level);me.level_progress=Math.min(100,Math.max(0,((me.xp-me.level_start_xp)/(me.level_next_xp-me.level_start_xp))*100));members=members.map(u=>u.id===me.id?me:u);if($('#page-leaderboard')?.classList.contains('active'))renderLeaderboard();}
+  const e=$('#publicMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollMsgs()}
+  refreshMembers();
+});
+socket.on('public_chat_cleared',()=>{const e=$('#publicMessages');if(e)e.innerHTML='';});
+socket.on('private_message',m=>{if(currentPrivate&&(m.sender_id===currentPrivate.id||m.receiver_id===currentPrivate.id)){const e=$('#privateMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollPrivate()}}});
+socket.on('presence',p=>{members=members.map(u=>u.id===p.userId?{...u,last_seen:p.status==='online'?new Date().toISOString():u.last_seen}:u);renderHome();if($('.page.active')?.id==='page-members')renderMembers()});
+setInterval(refreshMembers,30000);
+}async function go(page,update=true){
   if(protectedPages.has(page)&&!me){showLoginGate();return}
   $$(' .page').forEach(p=>p.classList.remove('active'));$(`#page-${page}`).classList.add('active');
   $$('.nav').forEach(n=>n.classList.toggle('active',n.dataset.page===page));

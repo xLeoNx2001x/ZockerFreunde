@@ -1,11 +1,15 @@
 {
   "name": "zockerfreunde-community",
-  "version": "3.3.0",
+  "version": "3.4.1",
   "private": true,
   "description": "Zockerfreunde - Gaming Community Website",
   "main": "server.js",
-  "scripts": { "start": "node server.js" },
-  "engines": { "node": ">=20" },
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
   "dependencies": {
     "cookie-parser": "^1.4.7",
     "dotenv": "^16.6.1",
