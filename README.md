@@ -19,3 +19,9 @@ Die Redirect-URI im Discord Developer Portal muss exakt der `DISCORD_REDIRECT_UR
 
 ## Hinweis
 Die Datenbank liegt unter `data/zockerfreunde.db`. Für dauerhafte Daten auf Render sollte ein persistenter Disk-/Volume-Speicher für `data` eingerichtet werden. Ohne persistenten Speicher kann die lokale SQLite-Datei bei einem neuen Deploy/Instanzwechsel verloren gehen.
+
+
+## 3.1 Änderungen
+- Geschützte Community-Bereiche: Nutzung erst nach Discord-Anmeldung.
+- Seitenabhängige LED-Farben und interaktiver Hintergrund.
+- Mobile/iPad-Darstellung beibehalten.

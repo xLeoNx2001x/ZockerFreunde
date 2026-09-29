@@ -1,6 +1,12 @@
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 let me=null,members=[],socket=null,currentPrivate=null;
 const pages={home:'Startseite',members:'Mitglieder',chat:'Öffentlicher Chat',private:'Private Chats',games:'Spiele',leaderboard:'Rangliste',settings:'Einstellungen'};
+const protectedPages=new Set(['members','chat','private','games','leaderboard','settings']);
+const pageThemes={home:'theme-home',members:'theme-members',chat:'theme-chat',private:'theme-private',games:'theme-games',leaderboard:'theme-leaderboard',settings:'theme-settings'};
+function setPageTheme(page){document.body.classList.remove(...Object.values(pageThemes));document.body.classList.add(pageThemes[page]||pageThemes.home);}
+function showLoginGate(){const e=$('#loginGate');if(!e)return;e.classList.add('show');e.setAttribute('aria-hidden','false');}
+function closeLoginGate(){const e=$('#loginGate');if(!e)return;e.classList.remove('show');e.setAttribute('aria-hidden','true');}
+
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 function avatar(u){return u?.avatar||'/logo.png'}
 function isOnline(u){return Date.now()-new Date(String(u.last_seen).replace(' ','T')+'Z').getTime()<120000}
@@ -33,6 +39,6 @@ async function logout(){await api('/auth/logout',{method:'POST'});location.reloa
 function connectSocket(){if(socket)return;socket=io();socket.on('public_message',m=>{const e=$('#publicMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollMsgs()}});socket.on('private_message',m=>{if(currentPrivate&&(m.sender_id===currentPrivate.id||m.receiver_id===currentPrivate.id)){const e=$('#privateMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollPrivate()}}});socket.on('presence',p=>{members=members.map(u=>u.id===p.userId?{...u,last_seen:p.status==='online'?new Date().toISOString():u.last_seen}:u);renderHome();if($('.page.active')?.id==='page-members')renderMembers()});}
 async function go(page,update=true){$$('.page').forEach(p=>p.classList.remove('active'));$(`#page-${page}`).classList.add('active');$$('.nav').forEach(n=>n.classList.toggle('active',n.dataset.page===page));if(update)$('#crumb').textContent=pages[page];if(page==='home')renderHome();if(page==='members')renderMembers();if(page==='chat')renderChat();if(page==='private')renderPrivate();if(page==='games')renderGames();if(page==='leaderboard')renderLeaderboard();if(page==='settings')await renderSettings();if(innerWidth<761)$('.sidebar')?.classList.remove('open')}
 $$('.nav').forEach(n=>n.onclick=()=>go(n.dataset.page));$('#mobileMenu').onclick=()=>$('.sidebar').classList.toggle('open');
-fetch('/api/me').then(r=>r.json()).then(d=>{me=d.user;return api('/api/members')}).then(d=>{members=d.members;renderTop();renderHome();renderMembers();renderChat();renderPrivate();renderGames();renderLeaderboard();renderSettings();connectSocket();}).catch(console.error);
+fetch('/api/me').then(r=>r.json()).then(async d=>{me=d.user;if(!me){renderTop();renderHome();setPageTheme('home');return}const m=await api('/api/members');members=m.members;renderTop();renderHome();renderMembers();renderChat();renderPrivate();renderGames();renderLeaderboard();renderSettings();connectSocket();setPageTheme('home');}).catch(console.error);
 fetch('/api/settings').then(r=>r.ok?r.json():null).then(d=>{if(d?.settings?.theme&&d.settings.theme!=='neon')document.body.classList.add(d.settings.theme)}).catch(()=>{});
 fetch('/api/config').then(r=>r.json()).then(c=>{if(c.discordInvite){document.querySelectorAll('#discordLink,#settingsDiscord').forEach(a=>a.href=c.discordInvite)}}).catch(()=>{});

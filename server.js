@@ -197,7 +197,5 @@ io.on('connection',socket=>{
   socket.on('disconnect',()=>{if(socket.user){const n=(online.get(socket.user.id)||1)-1;if(n<=0){online.delete(socket.user.id);io.emit('presence',{userId:socket.user.id,status:'offline'});}else online.set(socket.user.id,n);}});
 });
 
-app.use((req, res) => {
-    res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+app.use((req,res)=>res.sendFile(path.join(__dirname,'public','index.html')));
 server.listen(PORT,'0.0.0.0',()=>console.log(`Zockerfreunde läuft auf Port ${PORT}`));
