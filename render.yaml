@@ -1,17 +1,19 @@
 services:
   - type: web
-    name: zockerfreunde
+    name: zocker-freunde
     runtime: node
     buildCommand: npm install
     startCommand: npm start
     envVars:
-      - key: NODE_ENV
-        value: production
-      - key: SESSION_SECRET
-        generateValue: true
+      - key: NODE_VERSION
+        value: 20
       - key: DISCORD_CLIENT_ID
         sync: false
       - key: DISCORD_CLIENT_SECRET
         sync: false
       - key: DISCORD_REDIRECT_URI
+        sync: false
+      - key: SESSION_SECRET
+        generateValue: true
+      - key: DISCORD_INVITE_URL
         sync: false
