@@ -9,7 +9,13 @@ function closeLoginGate(){const e=$('#loginGate');if(!e)return;e.classList.remov
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 function avatar(u){return u?.avatar||'/logo.png'}
-function isOnline(u){return Date.now()-new Date(String(u.last_seen).replace(' ','T')+'Z').getTime()<120000}
+function isOnline(u){
+  if(!u?.last_seen)return false;
+  const raw=String(u.last_seen).trim();
+  const normalized=/[zZ]|[+-]\\d{2}:?\\d{2}$/.test(raw)?raw:raw.replace(' ','T')+'Z';
+  const t=Date.parse(normalized);
+  return Number.isFinite(t)&&Date.now()-t<120000;
+}
 function toast(t){const e=$('#toast');e.textContent=t;e.style.display='block';clearTimeout(window.tt);window.tt=setTimeout(()=>e.style.display='none',2600)}
 async function api(url,opt){const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});if(!r.ok)throw new Error(await r.text());return r.json()}
 function displayRole(u){return (u.discord_roles||[]).length ? (u.discord_roles||[]).map(r=>r.name).join(' · ') : (u.role||'Mitglied');}
@@ -27,8 +33,33 @@ function discordInfo(u){
   }).join(' ');
   return `<div class="discord-status yes">✓ Auf dem Zockerfreunde-Discord${roles?` · ${roles}`:''}</div>`;
 }
+function showLevelUp(level){
+  const old=$('#levelUpOverlay');
+  if(old) old.remove();
+  const e=document.createElement('div');
+  e.id='levelUpOverlay';
+  e.className='level-up-overlay';
+  e.innerHTML=`<div class="level-up-card"><div class="level-up-stars">✦ ✦ ✦</div><div class="level-up-kicker">LEVEL UP!</div><div class="level-up-number">LEVEL ${Number(level)||1}</div><div class="level-up-sub">Du hast ein neues Level erreicht!</div></div>`;
+  document.body.appendChild(e);
+  requestAnimationFrame(()=>e.classList.add('show'));
+  setTimeout(()=>e.classList.remove('show'),2600);
+  setTimeout(()=>e.remove(),3100);
+}
+function checkStoredLevel(u){
+  if(!u||!u.id)return;
+  const key=`zf_level_${u.id}`;
+  const current=Number(u.level||1);
+  const previous=Number(localStorage.getItem(key)||0);
+  if(previous>0&&current>previous)showLevelUp(current);
+  localStorage.setItem(key,String(current));
+}
 function memberCard(u){return `<div class="card member-card"><div class="member-head"><img class="avatar" src="${esc(avatar(u))}"><div><div class="member-name">${esc(u.global_name||u.username)}</div><div class="role">${esc(displayRole(u))}</div></div></div><p>${esc(u.bio||'Noch keine Beschreibung.')}</p>${discordInfo(u)}${levelInfo(u)}<div class="online-label"><i class="dot ${isOnline(u)?'online':''}"></i>${isOnline(u)?'Online':'Offline'} · ${u.message_count||0} Nachrichten</div><div class="actions"><button class="secondary" onclick="showProfile(${u.id})">Profil ansehen</button><button class="secondary" onclick="startPrivate(${u.id})">Nachricht</button></div></div>`}
-async function load(){const d=await api('/api/me');me=d.user;const m=await api('/api/members');members=m.members;renderTop();renderHome();connectSocket();}
+async function load(){
+  const d=await api('/api/me');me=d.user;
+  const m=await api('/api/members');members=m.members;
+  if(me){checkStoredLevel(me);members=members.map(u=>u.id===me.id?{...u,last_seen:new Date().toISOString()}:u);me=members.find(u=>u.id===me.id)||me;}
+  renderTop();renderHome();connectSocket();
+}
 function renderTop(){ $('#topUser').innerHTML=me?`<div class="user-mini"><i class="dot online"></i><img class="avatar" src="${esc(avatar(me))}"><b>${esc(me.global_name||me.username)}</b></div>`:`<a class="primary" href="/auth/discord">Mit Discord anmelden</a>`; }
 function renderHome(){const online=members.filter(isOnline).length;$('#page-home').innerHTML=`<div class="hero"><div class="eyebrow">DEINE GAMING COMMUNITY</div><h1>Gemeinsam spielen.<br><span class="gradient">Gemeinsam zocken.</span></h1><p>Zockerfreunde verbindet Gaming, Freunde und Community an einem Ort. Chatte, finde deine Freunde und sammle XP für die Community-Rangliste.</p><div class="actions">${me?`<button class="primary" onclick="go('chat')">Zum Community-Chat →</button>`:`<a class="primary" href="/auth/discord">Mit Discord starten →</a>`}<button class="secondary" onclick="go('leaderboard')">🏆 Rangliste ansehen</button></div></div><div class="stats"><div class="stat"><strong>${members.length}</strong><span>Mitglieder</span></div><div class="stat"><strong>${online}</strong><span>Gerade online</span></div><div class="stat"><strong>${members.reduce((a,b)=>a+b.points,0)}</strong><span>Community-Punkte</span></div><div class="stat"><strong>∞</strong><span>Gemeinsame Momente</span></div></div><div class="section-title"><h2>Aktive Mitglieder</h2><button class="secondary" onclick="go('members')">Alle ansehen</button></div><div class="grid">${members.filter(isOnline).slice(0,4).map(memberCard).join('')||'<div class="empty">Noch niemand online.</div>'}</div>`}
 function renderMembers(){ $('#page-members').innerHTML=`<div class="section-title"><div><h2>Mitglieder</h2><div class="eyebrow">ZOCKERFREUNDE COMMUNITY</div></div></div><input id="memberSearch" class="search" placeholder="Mitglied suchen ..."><div id="memberGrid" class="grid" style="margin-top:15px">${members.map(memberCard).join('')||'<div class="empty">Noch keine Mitglieder.</div>'}</div>`;$('#memberSearch').oninput=e=>{const q=e.target.value.toLowerCase();$('#memberGrid').innerHTML=members.filter(u=>(u.global_name||u.username).toLowerCase().includes(q)||displayRole(u).toLowerCase().includes(q)).map(memberCard).join('')||'<div class="empty">Kein Mitglied gefunden.</div>'}}
@@ -172,7 +203,23 @@ async function saveBio(){await api('/api/profile',{method:'POST',body:JSON.strin
 async function setTheme(theme){document.body.classList.remove('light','dark');if(theme!=='neon')document.body.classList.add(theme);await api('/api/settings',{method:'POST',body:JSON.stringify({theme})});renderSettings()}
 async function logout(){await api('/auth/logout',{method:'POST'});location.reload()}
 function refreshMembers(){
-  return api('/api/members').then(d=>{members=d.members;if(me){const fresh=members.find(u=>u.id===me.id);if(fresh)me=fresh;}renderHome();if($('.page.active')?.id==='page-members')renderMembers();if($('.page.active')?.id==='page-leaderboard')renderLeaderboard();}).catch(()=>{});
+  return api('/api/members').then(d=>{
+    members=d.members;
+    if(me){
+      const fresh=members.find(u=>u.id===me.id);
+      if(fresh){
+        const oldLevel=Number(me.level||1);
+        me=fresh;
+        if(me.level>oldLevel)showLevelUp(me.level);
+        localStorage.setItem(`zf_level_${me.id}`,String(me.level||1));
+      }
+      // The current authenticated user is active while this page is open.
+      members=members.map(u=>u.id===me.id?{...u,last_seen:new Date().toISOString()}:u);
+    }
+    renderHome();
+    if($('.page.active')?.id==='page-members')renderMembers();
+    if($('.page.active')?.id==='page-leaderboard')renderLeaderboard();
+  }).catch(()=>{});
 }
 function connectSocket(){if(socket)return;socket=io();socket.on('public_message',m=>{
   if(me&&m.user_id===me.id){me={...me,xp:me.xp+Number(m.xp_gain||0),message_count:(me.message_count||0)+1};me.level=levelFromXPClient(me.xp);me.level_start_xp=levelStartXPClient(me.level);me.level_next_xp=levelNextXPClient(me.level);me.level_progress=Math.min(100,Math.max(0,((me.xp-me.level_start_xp)/(me.level_next_xp-me.level_start_xp))*100));members=members.map(u=>u.id===me.id?me:u);if($('#page-leaderboard')?.classList.contains('active'))renderLeaderboard();}
@@ -196,4 +243,14 @@ setInterval(refreshMembers,30000);
 $$('.nav').forEach(n=>n.onclick=()=>go(n.dataset.page));$('#mobileMenu').onclick=()=>$('.sidebar').classList.toggle('open');
 fetch('/api/me').then(r=>r.json()).then(async d=>{me=d.user;if(!me){renderTop();renderHome();setPageTheme('home');return}const m=await api('/api/members');members=m.members;renderTop();renderHome();renderMembers();renderChat();renderPrivate();renderLeaderboard();renderSettings();connectSocket();setPageTheme('home');}).catch(console.error);
 fetch('/api/settings').then(r=>r.ok?r.json():null).then(d=>{if(d?.settings?.theme&&d.settings.theme!=='neon')document.body.classList.add(d.settings.theme)}).catch(()=>{});
-fetch('/api/config').then(r=>r.json()).then(c=>{config=c;if(c.discordInvite){document.querySelectorAll('#discordLink,#settingsDiscord').forEach(a=>a.href=c.discordInvite)}}).catch(()=>{});
+fetch('/api/config').then(r=>r.json()).then(c=>{
+  config=c;
+  document.querySelectorAll('#discordLink,#settingsDiscord').forEach(a=>{
+    if(c.discordInvite){a.href=c.discordInvite;a.removeAttribute('aria-disabled');}
+    else{
+      a.href='#';
+      a.setAttribute('aria-disabled','true');
+      a.onclick=e=>{e.preventDefault();toast('Discord-Invite fehlt noch. Auf Render DISCORD_INVITE_URL eintragen.');};
+    }
+  });
+}).catch(()=>{});

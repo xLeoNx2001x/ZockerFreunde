@@ -71,3 +71,26 @@ body:after{content:"";position:fixed;inset:0;pointer-events:none;z-index:-1;back
 @media(max-width:760px){.account-info-list{grid-template-columns:1fr}.admin-panel{grid-column:auto}.admin-fields{grid-template-columns:1fr}.admin-fields .primary{width:100%}}
 
 .danger-btn{border-color:rgba(255,85,119,.35);color:#ff8da5}.danger-btn:hover{background:rgba(255,85,119,.12);border-color:rgba(255,85,119,.6)}.chat-head{display:flex;align-items:center;justify-content:space-between;gap:15px}.chat-head h2{margin-bottom:4px}@media(max-width:600px){.chat-head{align-items:flex-start;flex-direction:column}.danger-btn{width:100%}}
+
+/* Zockerfreunde 3.4.2 Feinschliff */
+.level-up-overlay{
+  position:fixed;inset:0;z-index:9999;display:grid;place-items:center;
+  background:rgba(5,7,18,0);backdrop-filter:blur(0);
+  pointer-events:none;opacity:0;transition:opacity .25s ease,background .25s ease,backdrop-filter .25s ease;
+}
+.level-up-overlay.show{opacity:1;background:rgba(5,7,18,.58);backdrop-filter:blur(5px)}
+.level-up-card{
+  min-width:320px;max-width:90vw;padding:30px 38px;text-align:center;border-radius:24px;
+  border:1px solid rgba(255,255,255,.18);
+  background:linear-gradient(145deg,rgba(24,27,55,.98),rgba(12,14,30,.98));
+  box-shadow:0 0 70px var(--glow),0 25px 80px rgba(0,0,0,.45);
+  transform:translateY(24px) scale(.84);transition:transform .45s cubic-bezier(.2,.9,.25,1.2);
+}
+.level-up-overlay.show .level-up-card{transform:translateY(0) scale(1)}
+.level-up-stars{color:var(--accent);font-size:20px;letter-spacing:10px;animation:levelStars .8s ease-in-out infinite alternate}
+.level-up-kicker{margin-top:9px;font-size:13px;font-weight:1000;letter-spacing:4px;color:#fff}
+.level-up-number{margin:3px 0 5px;font-size:44px;font-weight:1000;line-height:1;color:var(--accent);text-shadow:0 0 25px var(--glow)}
+.level-up-sub{color:#aeb5ca;font-size:12px;font-weight:700}
+.discord-btn[aria-disabled="true"]{opacity:.65;cursor:not-allowed}
+@keyframes levelStars{from{transform:scale(.92);opacity:.7}to{transform:scale(1.08);opacity:1}}
+@media(max-width:500px){.level-up-card{min-width:0;width:82vw;padding:26px 20px}.level-up-number{font-size:36px}}

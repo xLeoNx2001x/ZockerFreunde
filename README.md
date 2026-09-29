@@ -44,8 +44,13 @@ Beispiel: `123456789012345678,987654321098765432`
 Admins sehen unter **Einstellungen → Server & Level bearbeiten** die Mitgliederverwaltung. Dort können Level gesetzt und Discord-Rollen über den Bot vergeben werden. Dafür benötigt der Discord-Bot die passenden Server-/Rollenrechte.
 
 
-## 3.4.1 Feinschliff
+## 3.4.2 Feinschliff
 - Aktive Mitglieder werden über `last_seen` und Socket-Verbindungen aktualisiert.
 - Öffentlicher Chat kann von konfigurierten Admins geleert werden.
 - Discord-Beitreten verwendet `DISCORD_INVITE_URL`.
 - Chat-XP startet bei 5 XP und verdoppelt sich pro erreichtem Level: 5, 10, 20, 40, ...
+
+- Online-Erkennung akzeptiert jetzt PostgreSQL-/ISO-Zeitstempel korrekt.
+- Der eigene eingeloggte Account wird auf der Startseite sofort als aktiv behandelt.
+- Level-Up-Animation bei echtem Levelsprung ergänzt.
+- Discord-Beitreten zeigt bei fehlender `DISCORD_INVITE_URL` jetzt einen verständlichen Hinweis statt eines leeren Links.
