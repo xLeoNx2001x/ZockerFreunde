@@ -7,26 +7,38 @@ const cookieParser = require('cookie-parser');
 const { Pool } = require('pg');
 const { Server } = require('socket.io');
 
-const app = express();
-const server = http.createServer(app);
-const io = new Server(server, { cors: { origin: true, credentials: true } });
-const PORT = Number(process.env.PORT || 10000);
-const SECRET = process.env.SESSION_SECRET || 'change-me-in-production';
+if (!process.env.DATABASE_URL) {
+  console.error('DATABASE_URL fehlt. Bitte die Supabase/PostgreSQL-Verbindungs-URL als Environment Variable setzen.');
+}
 
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
-  max: 5
+  max: Number(process.env.DB_POOL_MAX || 5),
+  idleTimeoutMillis: 30000,
+  connectionTimeoutMillis: 10000
 });
 
-async function query(text, params = []) {
-  return pool.query(text, params);
-}
+const db = {
+  async get(sql, params = []) {
+    const r = await pool.query(sql, params);
+    return r.rows[0] || undefined;
+  },
+  async all(sql, params = []) {
+    const r = await pool.query(sql, params);
+    return r.rows;
+  },
+  async run(sql, params = []) {
+    const r = await pool.query(sql, params);
+    return { rowCount: r.rowCount, lastInsertRowid: r.rows[0]?.id };
+  },
+  async exec(sql) { return pool.query(sql); }
+};
 
-async function initDb() {
-  await query(`
+async function initDatabase() {
+  await db.exec(`
     CREATE TABLE IF NOT EXISTS users (
-      id BIGSERIAL PRIMARY KEY,
+      id SERIAL PRIMARY KEY,
       discord_id TEXT UNIQUE NOT NULL,
       username TEXT NOT NULL,
       global_name TEXT,
@@ -43,36 +55,42 @@ async function initDb() {
       discord_roles TEXT NOT NULL DEFAULT '[]',
       last_login_reward TEXT NOT NULL DEFAULT ''
     );
-
     CREATE TABLE IF NOT EXISTS auth_tokens (
       token_hash TEXT PRIMARY KEY,
-      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       expires_at BIGINT NOT NULL
     );
-
     CREATE TABLE IF NOT EXISTS public_messages (
-      id BIGSERIAL PRIMARY KEY,
-      user_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       message TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
-
     CREATE TABLE IF NOT EXISTS private_messages (
-      id BIGSERIAL PRIMARY KEY,
-      sender_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-      receiver_id BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      id SERIAL PRIMARY KEY,
+      sender_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      receiver_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
       message TEXT NOT NULL,
       created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
-
     CREATE TABLE IF NOT EXISTS settings (
-      user_id BIGINT PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+      user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
       theme TEXT NOT NULL DEFAULT 'neon',
       notifications INTEGER NOT NULL DEFAULT 1
     );
+    CREATE INDEX IF NOT EXISTS idx_users_xp ON users (xp DESC);
+    CREATE INDEX IF NOT EXISTS idx_public_messages_id ON public_messages (id DESC);
+    CREATE INDEX IF NOT EXISTS idx_private_messages_pair ON private_messages (sender_id, receiver_id, id);
+    CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens (user_id);
   `);
-  console.log('PostgreSQL-Datenbank bereit');
+  console.log('Supabase/PostgreSQL-Datenbank ist bereit.');
 }
+
+const app = express();
+const server = http.createServer(app);
+const io = new Server(server, { cors: { origin: true, credentials: true } });
+const PORT = Number(process.env.PORT || 10000);
+const SECRET = process.env.SESSION_SECRET || 'change-me-in-production';
 
 const germanDay = () => new Intl.DateTimeFormat('de-DE', {
   timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit'
@@ -101,29 +119,13 @@ async function syncDiscordMember(discordId) {
       discordRequest(`/guilds/${guildId}/members/${discordId}`),
       discordRequest(`/guilds/${guildId}/roles`)
     ]);
-
-    if (!member || member.notFound) {
-      return { inServer: false, roles: [] };
-    }
-
+    if (!member || member.notFound) return { inServer: false, roles: [] };
     const roleMap = new Map((roles || []).map(r => [r.id, r]));
-
-    const memberRoles = (member.roles || [])
-      .map(id => {
-        const r = roleMap.get(id);
-        return r ? {
-          id: r.id,
-          name: r.name,
-          color: r.color || 0
-        } : null;
-      })
-      .filter(Boolean)
-      .filter(r => r.name !== '@everyone');
-
-    return {
-      inServer: true,
-      roles: memberRoles
-    };
+    const memberRoles = (member.roles || []).map(id => {
+      const r = roleMap.get(id);
+      return r ? { id: r.id, name: r.name, color: r.color || 0 } : null;
+    }).filter(Boolean).filter(r => r.name !== '@everyone');
+    return { inServer: true, roles: memberRoles };
   } catch (e) {
     console.error('Discord-Mitglied konnte nicht geprüft werden:', e.message);
     return null;
@@ -132,127 +134,53 @@ async function syncDiscordMember(discordId) {
 
 async function awardDailyLogin(userId) {
   const today = germanDay();
-
-  const r = await query(
-    'SELECT last_login_reward FROM users WHERE id=$1',
-    [userId]
-  );
-
-  const u = r.rows[0];
-
+  const u = await db.get('SELECT last_login_reward FROM users WHERE id=$1', [userId]);
   if (!u || u.last_login_reward === today) return false;
-
-  await query(
-    'UPDATE users SET xp=xp+25,last_login_reward=$1 WHERE id=$2',
-    [today, userId]
-  );
-
+  await db.run('UPDATE users SET xp=xp+25,last_login_reward=$1 WHERE id=$2', [today, userId]);
   return true;
 }
 
-const clean = s =>
-  String(s ?? '').replace(/[<>]/g, '').trim();
-
-const tokenHash = token =>
-  crypto.createHash('sha256').update(token).digest('hex');
-
-const sign = value =>
-  crypto.createHmac('sha256', SECRET).update(value).digest('hex');
-
-async function issueToken(userId) {
+const clean = s => String(s ?? '').replace(/[<>]/g, '').trim();
+const tokenHash = token => crypto.createHash('sha256').update(token).digest('hex');
+const sign = value => crypto.createHmac('sha256', SECRET).update(value).digest('hex');
+function issueToken(userId) {
   const raw = crypto.randomBytes(32).toString('hex');
   const expires = Date.now() + 1000 * 60 * 60 * 24 * 30;
-
-  await query(
-    'INSERT INTO auth_tokens(token_hash,user_id,expires_at) VALUES($1,$2,$3)',
-    [tokenHash(raw), userId, expires]
-  );
-
-  return `${raw}.${sign(raw)}`;
+  return { raw, expires, value: `${raw}.${sign(raw)}` };
 }
 async function currentUser(req) {
   const value = req.cookies?.zf_token;
   if (!value || !value.includes('.')) return null;
-
   const [raw, sig] = value.split('.');
   const expected = sign(raw);
-
-  if (sig.length !== expected.length ||
-      !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
-
-  const r = await query(
-    'SELECT u.* FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND t.expires_at>$2',
-    [tokenHash(raw), Date.now()]
-  );
-
-  const row = r.rows[0];
-
-  if (row) {
-    await query('UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE id=$1', [row.id]);
-  }
-
+  if (sig.length !== expected.length || !crypto.timingSafeEqual(Buffer.from(sig), Buffer.from(expected))) return null;
+  const row = await db.get('SELECT u.* FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND t.expires_at>$2', [tokenHash(raw), Date.now()]);
+  if (row) await db.run('UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE id=$1', [row.id]);
   return row || null;
 }
-
 async function publicUser(u) {
-  const roles = (() => {
-    try { return JSON.parse(u.discord_roles || '[]'); } catch { return []; }
-  })();
-
-  const countResult = await query(
-    'SELECT COUNT(*)::int AS count FROM public_messages WHERE user_id=$1',
-    [u.id]
-  );
-
-  const messageCount = countResult.rows[0].count;
+  const roles = (() => { try { return JSON.parse(u.discord_roles || '[]'); } catch { return []; } })();
+  const messageCount = (await db.get('SELECT COUNT(*)::int AS count FROM public_messages WHERE user_id=$1', [u.id])).count;
   const level = levelFromXP(u.xp);
   const start = levelStartXP(level);
   const next = levelNextXP(level);
-
   return {
-    id: u.id,
-    username: u.username,
-    global_name: u.global_name,
-    avatar: u.avatar,
-    role: u.role,
-    discord_id: u.discord_id,
-    discord_in_server: Boolean(u.discord_in_server),
-    discord_roles: roles,
-    bio: u.bio,
-    xp: Number(u.xp) || 0,
-    level,
-    level_xp: Math.max(0, (Number(u.xp) || 0) - start),
-    level_needed: Math.max(1, next - start),
-    points: Number(u.points) || 0,
-    games_played: Number(u.games_played) || 0,
-    wins: Number(u.wins) || 0,
-    message_count: messageCount,
-    created_at: u.created_at,
-    last_seen: u.last_seen
+    id: u.id, username: u.username, global_name: u.global_name, avatar: u.avatar,
+    role: u.role, discord_id: u.discord_id, discord_in_server: Boolean(u.discord_in_server),
+    discord_roles: roles, bio: u.bio, xp: u.xp, level, level_start_xp: start,
+    level_next_xp: next, level_progress: Math.min(100, Math.max(0, ((u.xp - start) / (next - start)) * 100)),
+    points: u.points, message_count: messageCount, games_played: u.games_played || 0, wins: u.wins || 0,
+    last_seen: u.last_seen, created_at: u.created_at
   };
 }
-function setSessionCookie(res, token) {
-  res.cookie('zf_token', token, {
-    httpOnly: true,
-    sameSite: 'lax',
-    secure: process.env.NODE_ENV === 'production',
-    maxAge: 1000 * 60 * 60 * 24 * 30
-  });
-}
-
-function clearSessionCookie(res) {
-  res.clearCookie('zf_token');
-}
+async function getPublicUsers(rows) { return Promise.all(rows.map(publicUser)); }
 async function requireUser(req, res, next) {
   try {
     const u = await currentUser(req);
     if (!u) return res.status(401).json({ error: 'Nicht angemeldet' });
     req.user = u;
     next();
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
-  }
+  } catch (e) { console.error(e); res.status(500).json({ error: 'Serverfehler' }); }
 }
 
 app.use(express.json({ limit: '64kb' }));
@@ -260,547 +188,153 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
 app.get('/health', async (req, res) => {
-  try {
-    await query('SELECT 1');
-    res.json({ ok: true, database: 'connected' });
-  } catch (e) {
-    console.error('Health DB error:', e.message);
-    res.status(503).json({ ok: false, database: 'disconnected' });
-  }
+  try { await db.get('SELECT 1 AS ok'); res.json({ ok: true, database: 'connected' }); }
+  catch (e) { res.status(503).json({ ok: false, database: 'error' }); }
 });
-
 app.get('/api/config', (req, res) => res.json({
   discordInvite: process.env.DISCORD_INVITE_URL || '',
-  discordServerCheckConfigured: Boolean(
-    process.env.DISCORD_GUILD_ID &&
-    process.env.DISCORD_BOT_TOKEN
-  )
+  discordServerCheckConfigured: Boolean(process.env.DISCORD_GUILD_ID && process.env.DISCORD_BOT_TOKEN)
 }));
-
-app.get('/api/me', async (req, res) => {
-  try {
-    const u = await currentUser(req);
-    res.json({ user: u ? await publicUser(u) : null });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
-  }
+app.get('/api/me', async (req, res) => { const u = await currentUser(req); res.json({ user: u ? await publicUser(u) : null }); });
+app.get('/api/members', requireUser, async (req, res) => {
+  const users = await db.all('SELECT * FROM users ORDER BY xp DESC, username ASC');
+  res.json({ members: await getPublicUsers(users) });
 });
-
-app.get('/api/members', async (req, res) => {
-  try {
-    const r = await query(
-      'SELECT * FROM users ORDER BY xp DESC, username ASC'
-    );
-
-    res.json({
-      members: await Promise.all(r.rows.map(publicUser))
-    });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
-  }
+app.get('/api/member/:id', requireUser, async (req, res) => {
+  const u = await db.get('SELECT * FROM users WHERE id=$1', [Number(req.params.id)]);
+  if (!u) return res.status(404).json({ error: 'Nicht gefunden' });
+  res.json({ member: await publicUser(u) });
 });
-
-app.get('/api/member/:id', async (req, res) => {
-  try {
-    const r = await query(
-      'SELECT * FROM users WHERE id=$1',
-      [Number(req.params.id)]
-    );
-
-    const u = r.rows[0];
-
-    if (!u) {
-      return res.status(404).json({ error: 'Nicht gefunden' });
-    }
-
-    res.json({ member: await publicUser(u) });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
-  }
-});
-
 app.get('/api/account', requireUser, async (req, res) => {
-  try {
-    const check = await syncDiscordMember(req.user.discord_id);
-
-    if (check) {
-      await query(
-        'UPDATE users SET discord_in_server=$1,discord_roles=$2,role=$3 WHERE id=$4',
-        [
-          check.inServer,
-          JSON.stringify(check.roles),
-          check.roles[0]?.name ||
-            (check.inServer ? 'Mitglied' : 'Nicht auf Server'),
-          req.user.id
-        ]
-      );
-    }
-
-    const r = await query(
-      'SELECT * FROM users WHERE id=$1',
-      [req.user.id]
-    );
-
-    res.json({
-      account: await publicUser(r.rows[0]),
-      discordCheckConfigured: Boolean(
-        process.env.DISCORD_GUILD_ID &&
-        process.env.DISCORD_BOT_TOKEN
-      )
-    });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
+  const check = await syncDiscordMember(req.user.discord_id);
+  if (check) {
+    await db.run('UPDATE users SET discord_in_server=$1,discord_roles=$2,role=$3 WHERE id=$4', [check.inServer, JSON.stringify(check.roles), check.roles[0]?.name || (check.inServer ? 'Mitglied' : 'Nicht auf Server'), req.user.id]);
   }
+  const u = await db.get('SELECT * FROM users WHERE id=$1', [req.user.id]);
+  res.json({ account: await publicUser(u), discordCheckConfigured: Boolean(process.env.DISCORD_GUILD_ID && process.env.DISCORD_BOT_TOKEN) });
 });
 app.get('/api/leaderboard', async (req, res) => {
-  try {
-    const r = await query('SELECT * FROM users ORDER BY xp DESC, username ASC LIMIT 100');
-    res.json({ members: await Promise.all(r.rows.map(publicUser)) });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
-  }
+  const users = await db.all('SELECT * FROM users ORDER BY xp DESC, username ASC LIMIT 100');
+  res.json({ members: await getPublicUsers(users) });
 });
-
-app.get('/api/chat/public', async (req, res) => {
-  try {
-    const r = await query(`
-      SELECT m.*,u.username,u.global_name,u.avatar,u.role
-      FROM public_messages m
-      JOIN users u ON u.id=m.user_id
-      ORDER BY m.id DESC LIMIT 80
-    `);
-    res.json({ messages: r.rows.reverse() });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
-  }
+app.get('/api/chat/public', requireUser, async (req, res) => {
+  const rows = await db.all(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM public_messages m JOIN users u ON u.id=m.user_id ORDER BY m.id DESC LIMIT 80`);
+  res.json({ messages: rows.reverse() });
 });
-
 app.get('/api/chat/private/:id', requireUser, async (req, res) => {
-  try {
-    const other = Number(req.params.id);
-    const r = await query(`
-      SELECT m.*,u.username,u.global_name,u.avatar,u.role
-      FROM private_messages m
-      JOIN users u ON u.id=m.sender_id
-      WHERE (sender_id=$1 AND receiver_id=$2)
-         OR (sender_id=$3 AND receiver_id=$4)
-      ORDER BY m.id ASC LIMIT 200
-    `, [req.user.id, other, other, req.user.id]);
-
-    res.json({ messages: r.rows });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
-  }
+  const other = Number(req.params.id);
+  const rows = await db.all(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM private_messages m JOIN users u ON u.id=m.sender_id WHERE (sender_id=$1 AND receiver_id=$2) OR (sender_id=$3 AND receiver_id=$4) ORDER BY m.id ASC LIMIT 200`, [req.user.id, other, other, req.user.id]);
+  res.json({ messages: rows });
 });
-
 app.get('/api/settings', requireUser, async (req, res) => {
-  try {
-    let r = await query(
-      'SELECT * FROM settings WHERE user_id=$1',
-      [req.user.id]
-    );
-
-    if (!r.rows[0]) {
-      await query(
-        'INSERT INTO settings(user_id) VALUES($1) ON CONFLICT (user_id) DO NOTHING',
-        [req.user.id]
-      );
-
-      r = await query(
-        'SELECT * FROM settings WHERE user_id=$1',
-        [req.user.id]
-      );
-    }
-
-    res.json({ settings: r.rows[0] });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
-  }
+  let s = await db.get('SELECT * FROM settings WHERE user_id=$1', [req.user.id]);
+  if (!s) { await db.run('INSERT INTO settings(user_id) VALUES($1) ON CONFLICT(user_id) DO NOTHING', [req.user.id]); s = await db.get('SELECT * FROM settings WHERE user_id=$1', [req.user.id]); }
+  res.json({ settings: s });
 });
-
 app.post('/api/settings', requireUser, async (req, res) => {
-  try {
-    const theme = ['dark', 'light', 'neon'].includes(req.body.theme)
-      ? req.body.theme
-      : 'neon';
-
-    const notifications = req.body.notifications === false ? 0 : 1;
-
-    await query(`
-      INSERT INTO settings(user_id,theme,notifications)
-      VALUES($1,$2,$3)
-      ON CONFLICT(user_id)
-      DO UPDATE SET
-        theme=EXCLUDED.theme,
-        notifications=EXCLUDED.notifications
-    `, [req.user.id, theme, notifications]);
-
-    res.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
-  }
+  const theme = ['dark', 'light', 'neon'].includes(req.body.theme) ? req.body.theme : 'neon';
+  const notifications = req.body.notifications === false ? 0 : 1;
+  await db.run(`INSERT INTO settings(user_id,theme,notifications) VALUES($1,$2,$3) ON CONFLICT(user_id) DO UPDATE SET theme=EXCLUDED.theme,notifications=EXCLUDED.notifications`, [req.user.id, theme, notifications]);
+  res.json({ ok: true });
 });
-
 app.post('/api/profile', requireUser, async (req, res) => {
-  try {
-    const bio = clean(req.body.bio).slice(0, 240);
-
-    await query(
-      'UPDATE users SET bio=$1 WHERE id=$2',
-      [bio, req.user.id]
-    );
-
-    res.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
-  }
-});
-app.post('/api/chat/public', requireUser, async (req, res) => {
-  try {
-    const message = clean(req.body.message).slice(0, 1000);
-
-    if (!message) {
-      return res.status(400).json({ error: 'Nachricht fehlt' });
-    }
-
-    const r = await query(`
-      INSERT INTO public_messages(user_id,message)
-      VALUES($1,$2)
-      RETURNING *
-    `, [req.user.id, message]);
-
-    await query(
-      'UPDATE users SET xp=xp+5 WHERE id=$1',
-      [req.user.id]
-    );
-
-    const full = await query(`
-      SELECT m.*,u.username,u.global_name,u.avatar,u.role
-      FROM public_messages m
-      JOIN users u ON u.id=m.user_id
-      WHERE m.id=$1
-    `, [r.rows[0].id]);
-
-    const msg = full.rows[0];
-
-    io.emit('public_message', msg);
-
-    res.json({ message: msg });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
-  }
+  const bio = clean(req.body.bio).slice(0, 240);
+  await db.run('UPDATE users SET bio=$1 WHERE id=$2', [bio, req.user.id]);
+  res.json({ ok: true });
 });
 
-app.post('/api/chat/private/:id', requireUser, async (req, res) => {
-  try {
-    const receiverId = Number(req.params.id);
-    const message = clean(req.body.message).slice(0, 1000);
-
-    if (!Number.isFinite(receiverId) || !message) {
-      return res.status(400).json({ error: 'Ungültige Daten' });
-    }
-
-    const receiver = await query(
-      'SELECT id FROM users WHERE id=$1',
-      [receiverId]
-    );
-
-    if (!receiver.rows[0]) {
-      return res.status(404).json({ error: 'Benutzer nicht gefunden' });
-    }
-
-    const r = await query(`
-      INSERT INTO private_messages(sender_id,receiver_id,message)
-      VALUES($1,$2,$3)
-      RETURNING *
-    `, [req.user.id, receiverId, message]);
-
-    const msg = r.rows[0];
-
-    io.to(`user:${receiverId}`).emit('private_message', msg);
-    io.to(`user:${req.user.id}`).emit('private_message', msg);
-
-    res.json({ message: msg });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Datenbankfehler' });
-  }
-});
-
-app.get('/api/discord/check', requireUser, async (req, res) => {
-  try {
-    const check = await syncDiscordMember(req.user.discord_id);
-
-    if (!check) {
-      return res.json({
-        configured: false,
-        inServer: Boolean(req.user.discord_in_server),
-        roles: []
-      });
-    }
-
-    await query(`
-      UPDATE users
-      SET discord_in_server=$1,
-          discord_roles=$2,
-          role=$3
-      WHERE id=$4
-    `, [
-      check.inServer,
-      JSON.stringify(check.roles),
-      check.roles[0]?.name || (check.inServer ? 'Mitglied' : 'Nicht auf Server'),
-      req.user.id
-    ]);
-
-    res.json({
-      configured: true,
-      inServer: check.inServer,
-      roles: check.roles
-    });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Discord-Prüfung fehlgeschlagen' });
-  }
-});
 app.get('/auth/discord', (req, res) => {
-  const clientId = process.env.DISCORD_CLIENT_ID;
-  const redirectUri = process.env.DISCORD_REDIRECT_URI;
-
-  if (!clientId || !redirectUri) {
-    return res.status(500).send('Discord OAuth ist nicht konfiguriert.');
-  }
-
-  const params = new URLSearchParams({
-    client_id: clientId,
-    redirect_uri: redirectUri,
-    response_type: 'code',
-    scope: 'identify'
-  });
-
-  res.redirect(
-    `https://discord.com/oauth2/authorize?${params.toString()}`
-  );
+  if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_CLIENT_SECRET) return res.status(500).send('Discord OAuth ist noch nicht konfiguriert.');
+  const state = crypto.randomBytes(20).toString('hex');
+  res.cookie('zf_oauth_state', state, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', maxAge: 10 * 60 * 1000 });
+  const params = new URLSearchParams({ client_id: process.env.DISCORD_CLIENT_ID, response_type: 'code', redirect_uri: process.env.DISCORD_REDIRECT_URI, scope: 'identify', state });
+  res.redirect(`https://discord.com/oauth2/authorize?${params}`);
 });
-
 app.get('/auth/discord/callback', async (req, res) => {
   try {
-    const code = String(req.query.code || '');
-
-    if (!code) {
-      return res.status(400).send('Discord-Code fehlt.');
-    }
-
-    const clientId = process.env.DISCORD_CLIENT_ID;
-    const clientSecret = process.env.DISCORD_CLIENT_SECRET;
-    const redirectUri = process.env.DISCORD_REDIRECT_URI;
-
-    if (!clientId || !clientSecret || !redirectUri) {
-      return res.status(500).send('Discord OAuth ist nicht konfiguriert.');
-    }
-
-    const tokenResponse = await fetch(
-      'https://discord.com/api/oauth2/token',
-      {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded'
-        },
-        body: new URLSearchParams({
-          client_id: clientId,
-          client_secret: clientSecret,
-          grant_type: 'authorization_code',
-          code,
-          redirect_uri: redirectUri
-        })
-      }
-    );
-
-    if (!tokenResponse.ok) {
-      throw new Error(`Discord Token ${tokenResponse.status}`);
-    }
-
-    const tokenData = await tokenResponse.json();
-
-    const userResponse = await fetch(
-      'https://discord.com/api/v10/users/@me',
-      {
-        headers: {
-          Authorization: `Bearer ${tokenData.access_token}`
-        }
-      }
-    );
-
-    if (!userResponse.ok) {
-      throw new Error(`Discord User ${userResponse.status}`);
-    }
-
-    const discordUser = await userResponse.json();
-
-    const existing = await query(
-      'SELECT * FROM users WHERE discord_id=$1',
-      [discordUser.id]
-    );
-
-    let user;
-
-    if (existing.rows[0]) {
-      user = existing.rows[0];
-
-      await query(`
-        UPDATE users
-        SET username=$1,
-            global_name=$2,
-            avatar=$3,
-            last_seen=CURRENT_TIMESTAMP
-        WHERE id=$4
-      `, [
-        discordUser.username,
-        discordUser.global_name || '',
-        discordUser.avatar || '',
-        user.id
-      ]);
+    if (!req.query.code || !req.query.state || req.query.state !== req.cookies.zf_oauth_state) return res.status(400).send('Ungültige Discord-Anmeldung.');
+    const body = new URLSearchParams({ client_id: process.env.DISCORD_CLIENT_ID, client_secret: process.env.DISCORD_CLIENT_SECRET, grant_type: 'authorization_code', code: req.query.code, redirect_uri: process.env.DISCORD_REDIRECT_URI });
+    const tokenRes = await fetch('https://discord.com/api/oauth2/token', { method: 'POST', headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, body });
+    if (!tokenRes.ok) throw new Error('Token request failed');
+    const token = await tokenRes.json();
+    const userRes = await fetch('https://discord.com/api/users/@me', { headers: { Authorization: `Bearer ${token.access_token}` } });
+    if (!userRes.ok) throw new Error('User request failed');
+    const d = await userRes.json();
+    const avatar = d.avatar ? `https://cdn.discordapp.com/avatars/${d.id}/${d.avatar}.png?size=256` : `https://cdn.discordapp.com/embed/avatars/${Number(d.discriminator || 0) % 5}.png`;
+    let u = await db.get('SELECT * FROM users WHERE discord_id=$1', [d.id]);
+    if (!u) {
+      const info = await db.get('INSERT INTO users(discord_id,username,global_name,avatar) VALUES($1,$2,$3,$4) RETURNING id', [d.id, d.username, d.global_name || d.username, avatar]);
+      u = await db.get('SELECT * FROM users WHERE id=$1', [info.id]);
     } else {
-      const created = await query(`
-        INSERT INTO users
-          (discord_id,username,global_name,avatar)
-        VALUES($1,$2,$3,$4)
-        RETURNING *
-      `, [
-        discordUser.id,
-        discordUser.username,
-        discordUser.global_name || '',
-        discordUser.avatar || ''
-      ]);
-
-      user = created.rows[0];
+      await db.run('UPDATE users SET username=$1,global_name=$2,avatar=$3,last_seen=CURRENT_TIMESTAMP WHERE id=$4', [d.username, d.global_name || d.username, avatar, u.id]);
+      u = await db.get('SELECT * FROM users WHERE id=$1', [u.id]);
     }
-
-    await awardDailyLogin(user.id);
-
-    const token = await issueToken(user.id);
-
-    setSessionCookie(res, token);
-
+    const discordMember = await syncDiscordMember(d.id);
+    if (discordMember) await db.run('UPDATE users SET discord_in_server=$1,discord_roles=$2,role=$3 WHERE id=$4', [discordMember.inServer, JSON.stringify(discordMember.roles), discordMember.roles[0]?.name || (discordMember.inServer ? 'Mitglied' : 'Nicht auf Server'), u.id]);
+    await awardDailyLogin(u.id);
+    u = await db.get('SELECT * FROM users WHERE id=$1', [u.id]);
+    const tokenValue = issueToken(u.id);
+    await db.run('INSERT INTO auth_tokens(token_hash,user_id,expires_at) VALUES($1,$2,$3)', [tokenHash(tokenValue.raw), u.id, tokenValue.expires]);
+    await db.run('DELETE FROM auth_tokens WHERE expires_at <= $1', [Date.now()]);
+    res.cookie('zf_token', tokenValue.value, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
+    res.clearCookie('zf_oauth_state');
     res.redirect('/');
-  } catch (e) {
-    console.error('Discord Login Fehler:', e);
-    res.status(500).send('Discord Login fehlgeschlagen.');
-  }
+  } catch (e) { console.error(e); res.status(500).send('Discord-Anmeldung fehlgeschlagen. Bitte Client-ID, Secret und Redirect-URI prüfen.'); }
 });
-
 app.post('/auth/logout', async (req, res) => {
-  try {
-    const token = req.cookies?.zf_token;
-
-    if (token && token.includes('.')) {
-      const [raw] = token.split('.');
-
-      await query(
-        'DELETE FROM auth_tokens WHERE token_hash=$1',
-        [tokenHash(raw)]
-      );
-    }
-
-    clearSessionCookie(res);
-
-    res.json({ ok: true });
-  } catch (e) {
-    console.error(e);
-    res.status(500).json({ error: 'Logout fehlgeschlagen' });
-  }
+  const v = req.cookies?.zf_token;
+  if (v) { const raw = v.split('.')[0]; await db.run('DELETE FROM auth_tokens WHERE token_hash=$1', [tokenHash(raw)]); }
+  res.clearCookie('zf_token'); res.json({ ok: true });
 });
+
 io.use(async (socket, next) => {
   try {
-    const cookies = socket.handshake.headers.cookie || '';
-    const match = cookies.match(/(?:^|;\s*)zf_token=([^;]+)/);
-
-    if (!match) {
-      socket.user = null;
-      return next();
-    }
-
+    const cookie = socket.handshake.headers.cookie || '';
+    const match = cookie.match(/(?:^|; )zf_token=([^;]+)/);
+    if (!match) return next();
     const value = decodeURIComponent(match[1]);
-
-    if (!value.includes('.')) {
-      socket.user = null;
-      return next();
-    }
-
+    if (!value.includes('.')) return next();
     const [raw, sig] = value.split('.');
-    const expected = sign(raw);
-
-    if (
-      sig.length !== expected.length ||
-      !crypto.timingSafeEqual(
-        Buffer.from(sig),
-        Buffer.from(expected)
-      )
-    ) {
-      socket.user = null;
-      return next();
-    }
-
-    const r = await query(`
-      SELECT u.*
-      FROM auth_tokens t
-      JOIN users u ON u.id=t.user_id
-      WHERE t.token_hash=$1
-        AND t.expires_at>$2
-    `, [tokenHash(raw), Date.now()]);
-
-    socket.user = r.rows[0] || null;
-    next();
-  } catch (e) {
-    console.error('Socket Auth Fehler:', e);
-    socket.user = null;
-    next();
-  }
+    if (sig !== sign(raw)) return next();
+    const u = await db.get('SELECT u.* FROM auth_tokens t JOIN users u ON u.id=t.user_id WHERE t.token_hash=$1 AND t.expires_at>$2', [tokenHash(raw), Date.now()]);
+    if (u) socket.user = await publicUser(u);
+  } catch (e) { console.error('Socket-Authentifizierung:', e.message); }
+  next();
 });
 
+const online = new Map();
 io.on('connection', socket => {
-  if (!socket.user) return;
-
-  const userId = String(socket.user.id);
-
-  socket.join(`user:${userId}`);
-
-  socket.emit('presence', {
-    online: true
+  if (socket.user) { online.set(socket.user.id, (online.get(socket.user.id) || 0) + 1); io.emit('presence', { userId: socket.user.id, status: 'online' }); }
+  socket.on('public_message', async data => {
+    try {
+      if (!socket.user) return;
+      const message = clean(data?.message).slice(0, 1000); if (!message) return;
+      const info = await db.get('INSERT INTO public_messages(user_id,message) VALUES($1,$2) RETURNING id', [socket.user.id, message]);
+      const row = await db.get(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM public_messages m JOIN users u ON u.id=m.user_id WHERE m.id=$1`, [info.id]);
+      await db.run('UPDATE users SET xp=xp+2,points=points+1,last_seen=CURRENT_TIMESTAMP WHERE id=$1', [socket.user.id]);
+      io.emit('public_message', row);
+    } catch (e) { console.error('public_message:', e.message); }
   });
-
+  socket.on('private_message', async data => {
+    try {
+      if (!socket.user) return;
+      const receiverId = Number(data?.receiverId); const message = clean(data?.message).slice(0, 1000);
+      if (!receiverId || !message || receiverId === socket.user.id) return;
+      const target = await db.get('SELECT id FROM users WHERE id=$1', [receiverId]); if (!target) return;
+      const info = await db.get('INSERT INTO private_messages(sender_id,receiver_id,message) VALUES($1,$2,$3) RETURNING id', [socket.user.id, receiverId, message]);
+      const row = await db.get(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM private_messages m JOIN users u ON u.id=m.sender_id WHERE m.id=$1`, [info.id]);
+      for (const [, s] of io.sockets.sockets) if (s?.user?.id === receiverId || s?.user?.id === socket.user.id) s.emit('private_message', row);
+    } catch (e) { console.error('private_message:', e.message); }
+  });
   socket.on('disconnect', () => {
-    socket.emit('presence', {
-      online: false
-    });
+    if (socket.user) { const n = (online.get(socket.user.id) || 1) - 1; if (n <= 0) { online.delete(socket.user.id); io.emit('presence', { userId: socket.user.id, status: 'offline' }); } else online.set(socket.user.id, n); }
   });
 });
 
-app.get(/.*/, (req, res) => {
-  res.sendFile(path.join(__dirname, 'public', 'index.html'));
-});
+app.use((req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
-async function start() {
-  try {
-    await initDb();
+initDatabase()
+  .then(() => server.listen(PORT, '0.0.0.0', () => console.log(`Zockerfreunde läuft auf Port ${PORT}`)))
+  .catch(err => { console.error('Datenbank konnte nicht initialisiert werden:', err); process.exit(1); });
 
-    server.listen(PORT, '0.0.0.0', () => {
-      console.log(`Zockerfreunde läuft auf Port ${PORT}`);
-    });
-  } catch (e) {
-    console.error('Datenbank konnte nicht gestartet werden:', e);
-    process.exit(1);
-  }
-}
-
-start();
+process.on('SIGTERM', async () => { await pool.end(); process.exit(0); });

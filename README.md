@@ -1,32 +1,37 @@
-# Zockerfreunde Community 3.2
+# Zockerfreunde 3.3 – Supabase / PostgreSQL
 
-Gaming-Community-Webseite mit Discord OAuth, Mitgliederprofilen, öffentlichem Chat, privaten Chats, Online-Status, Discord-Server-Check, Discord-Rollen, XP-Levelsystem, Rangliste und Einstellungen.
+Die Website verwendet **PostgreSQL über Supabase** statt einer lokalen SQLite-Datei. Dadurch bleiben Accounts, XP, Level, Rangliste, Chats, Profile und Einstellungen auch nach Render-Restarts und neuen Deploys erhalten – ohne Render Persistent Disk.
 
-## XP-System
-- Öffentliche Nachricht: **+2 XP**
-- Discord-Login: **+25 XP einmal pro Kalendertag** (Europe/Berlin)
-- Level werden automatisch aus der XP-Zahl berechnet.
-- Spiele wurden aus der Webseite entfernt.
+## Render Environment Variables
 
-## Discord-Server-Check und Rollen
-Zusätzlich zu Discord OAuth benötigt die Webseite einen Bot, der sich auf deinem Discord-Server befindet.
+Setze in deinem Render Web Service:
 
-Render-Variablen:
+- `DATABASE_URL` = PostgreSQL Connection String aus Supabase
+- `DATABASE_SSL` = `true`
+- `DB_POOL_MAX` = `5`
 - `DISCORD_CLIENT_ID`
 - `DISCORD_CLIENT_SECRET`
 - `DISCORD_REDIRECT_URI`
-- `SESSION_SECRET`
+- `DISCORD_GUILD_ID`
+- `DISCORD_BOT_TOKEN`
 - `DISCORD_INVITE_URL`
-- `DISCORD_GUILD_ID` = ID deines Discord-Servers
-- `DISCORD_BOT_TOKEN` = Token deines Discord-Bots (nur als geheime Render-Variable)
-- `PORT` wird von Render gesetzt.
+- `SESSION_SECRET` (Render kann automatisch einen Wert erzeugen)
 
-Der Bot-Token darf **nicht** in GitHub, `app.js` oder dem Browser landen.
+Die Datenbanktabellen werden beim Start automatisch mit `CREATE TABLE IF NOT EXISTS` angelegt. Es ist kein manuelles SQL-Skript für die erste Einrichtung nötig.
+
+## Supabase
+
+In Supabase findest du den Connection String unter den Datenbank-/Connect-Einstellungen. Für einen normalen dauerhaften Render-Webservice kannst du den dort bereitgestellten PostgreSQL-Connection-String verwenden.
+
+## Lokal testen
+
+```bash
+npm install
+npm start
+```
+
+Dafür müssen die Environment Variables gesetzt sein. Der Healthcheck ist unter `/health` erreichbar und meldet `database: connected`, wenn PostgreSQL erreichbar ist.
 
 ## Render
-- Build Command: `npm install`
-- Start Command: `npm start`
-- Node: 24.21.0
 
-## SQLite
-Die Datenbank liegt unter `data/zockerfreunde.db`. Für dauerhafte Daten auf Render sollte ein persistenter Disk-/Volume-Speicher für `data` eingerichtet werden.
+`render.yaml` enthält bereits die benötigten Environment-Variablen und startet den Server mit `npm start`.

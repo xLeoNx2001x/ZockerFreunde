@@ -9,13 +9,17 @@ function closeLoginGate(){const e=$('#loginGate');if(!e)return;e.classList.remov
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 function avatar(u){return u?.avatar||'/logo.png'}
-function isOnline(u){return Date.now()-new Date(String(u.last_seen).replace(' ','T')+'Z').getTime()<120000}
+function isOnline(u){const t=Date.parse(u?.last_seen||'');return Number.isFinite(t)&&Date.now()-t<120000}
 function toast(t){const e=$('#toast');e.textContent=t;e.style.display='block';clearTimeout(window.tt);window.tt=setTimeout(()=>e.style.display='none',2600)}
 async function api(url,opt){const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});if(!r.ok)throw new Error(await r.text());return r.json()}
 function displayRole(u){return (u.discord_roles||[]).length ? (u.discord_roles||[]).map(r=>r.name).join(' · ') : (u.role||'Mitglied');}
 function levelInfo(u){
-  const start=Number(u.level_start_xp||0), next=Number(u.level_next_xp||100);
-  return `<div class="level-line"><span>Level ${u.level||1}</span><span>${u.xp} / ${next} XP</span></div><div class="level-bar"><i style="width:${Math.min(100,Math.max(0,Number(u.level_progress)||0))}%"></i></div>`;
+  const xp=Math.max(0,Number(u.xp)||0);
+  const level=Math.max(1,Math.floor(Math.sqrt(xp/100))+1);
+  const start=Math.max(0,Math.pow(Math.max(1,level-1),2)*100);
+  const next=Math.pow(Math.max(1,level),2)*100;
+  const progress=next>start?((xp-start)/(next-start))*100:0;
+  return `<div class="level-line"><span>Level ${level}</span><span>${xp} / ${next} XP</span></div><div class="level-bar"><i style="width:${Math.min(100,Math.max(0,progress))}%"></i></div>`;
 }
 function discordInfo(u){
   if(!config.discordServerCheckConfigured) return `<div class="discord-status unknown">◌ Discord-Server nicht geprüft</div>`;
@@ -50,7 +54,7 @@ function renderLeaderboard(){
 async function saveBio(){await api('/api/profile',{method:'POST',body:JSON.stringify({bio:$('#bioInput').value})});const d=await api('/api/me');me=d.user;members=members.map(x=>x.id===me.id?me:x);toast('Profil gespeichert');renderMembers();renderHome()}
 async function setTheme(theme){document.body.classList.remove('light','dark');if(theme!=='neon')document.body.classList.add(theme);await api('/api/settings',{method:'POST',body:JSON.stringify({theme})});renderSettings()}
 async function logout(){await api('/auth/logout',{method:'POST'});location.reload()}
-function connectSocket(){if(socket)return;socket=io();socket.on('public_message',m=>{if(me&&m.user_id===me.id){me={...me,xp:me.xp+2,message_count:(me.message_count||0)+1};members=members.map(u=>u.id===me.id?me:u)}const e=$('#publicMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollMsgs()}});socket.on('private_message',m=>{if(currentPrivate&&(m.sender_id===currentPrivate.id||m.receiver_id===currentPrivate.id)){const e=$('#privateMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollPrivate()}}});socket.on('presence',p=>{members=members.map(u=>u.id===p.userId?{...u,last_seen:p.status==='online'?new Date().toISOString():u.last_seen}:u);renderHome();if($('.page.active')?.id==='page-members')renderMembers()});}
+function connectSocket(){if(socket)return;socket=io();socket.on('public_message',m=>{if(me&&m.user_id===me.id){me={...me,xp:(Number(me.xp)||0)+2,message_count:(me.message_count||0)+1};members=members.map(u=>u.id===me.id?me:u);renderTop();renderHome();renderLeaderboard();if($('.page.active')?.id==='page-members')renderMembers()}const e=$('#publicMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollMsgs()}});socket.on('private_message',m=>{if(currentPrivate&&(m.sender_id===currentPrivate.id||m.receiver_id===currentPrivate.id)){const e=$('#privateMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollPrivate()}}});socket.on('presence',p=>{members=members.map(u=>u.id===p.userId?{...u,last_seen:p.status==='online'?new Date().toISOString():u.last_seen}:u);renderHome();if($('.page.active')?.id==='page-members')renderMembers()});}
 async function go(page,update=true){
   if(protectedPages.has(page)&&!me){showLoginGate();return}
   $$(' .page').forEach(p=>p.classList.remove('active'));$(`#page-${page}`).classList.add('active');
