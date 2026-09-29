@@ -205,7 +205,12 @@ app.get('/api/members', async (req, res) => {
 app.get('/api/member/:id', async (req, res) => {
   const u = await db.get('SELECT * FROM users WHERE id=$1', [Number(req.params.id)]);
   if (!u) return res.status(404).json({ error: 'Nicht gefunden' });
-  res.json({ member: await publicUser(u) });
+  const check = await syncDiscordMember(u.discord_id);
+  if (check) {
+    await db.run('UPDATE users SET discord_in_server=$1,discord_roles=$2,role=$3 WHERE id=$4', [check.inServer, JSON.stringify(check.roles), check.roles[0]?.name || (check.inServer ? 'Mitglied' : 'Nicht auf Server'), u.id]);
+  }
+  const fresh = await db.get('SELECT * FROM users WHERE id=$1', [u.id]);
+  res.json({ member: await publicUser(fresh) });
 });
 app.get('/api/account', requireUser, async (req, res) => {
   const check = await syncDiscordMember(req.user.discord_id);
