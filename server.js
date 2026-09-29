@@ -3,7 +3,17 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const crypto = require('crypto');
-const Database = require('better-sqlite3');
+const fs = require("fs");
+const path = require("path");
+const Database = require("better-sqlite3");
+
+const dataDir = path.join(__dirname, "data");
+
+if (!fs.existsSync(dataDir)) {
+    fs.mkdirSync(dataDir, { recursive: true });
+}
+
+const db = new Database(path.join(dataDir, "zockerfreunde.db"));
 const cookieParser = require('cookie-parser');
 const { Server } = require('socket.io');
 
@@ -12,7 +22,6 @@ const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: true, credentials: true } });
 const PORT = Number(process.env.PORT || 10000);
 const SECRET = process.env.SESSION_SECRET || 'change-me-in-production';
-const db = new Database(path.join(__dirname, 'data', 'zockerfreunde.db'));
 db.pragma('journal_mode = WAL');
 
 db.exec(`
