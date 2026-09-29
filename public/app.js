@@ -9,17 +9,14 @@ function closeLoginGate(){const e=$('#loginGate');if(!e)return;e.classList.remov
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
 function avatar(u){return u?.avatar||'/logo.png'}
-function isOnline(u){const t=Date.parse(u?.last_seen||'');return Number.isFinite(t)&&Date.now()-t<120000}
+function isOnline(u){return Date.now()-new Date(String(u.last_seen).replace(' ','T')+'Z').getTime()<120000}
 function toast(t){const e=$('#toast');e.textContent=t;e.style.display='block';clearTimeout(window.tt);window.tt=setTimeout(()=>e.style.display='none',2600)}
 async function api(url,opt){const r=await fetch(url,{headers:{'Content-Type':'application/json'},...opt});if(!r.ok)throw new Error(await r.text());return r.json()}
 function displayRole(u){return (u.discord_roles||[]).length ? (u.discord_roles||[]).map(r=>r.name).join(' · ') : (u.role||'Mitglied');}
+const levelFromXPClient=xp=>Math.max(1,Math.floor(Math.sqrt(Math.max(0,Number(xp)||0)/100))+1);const levelStartXPClient=level=>Math.max(0,Math.pow(Math.max(1,level-1),2)*100);const levelNextXPClient=level=>Math.pow(Math.max(1,level),2)*100;
 function levelInfo(u){
-  const xp=Math.max(0,Number(u.xp)||0);
-  const level=Math.max(1,Math.floor(Math.sqrt(xp/100))+1);
-  const start=Math.max(0,Math.pow(Math.max(1,level-1),2)*100);
-  const next=Math.pow(Math.max(1,level),2)*100;
-  const progress=next>start?((xp-start)/(next-start))*100:0;
-  return `<div class="level-line"><span>Level ${level}</span><span>${xp} / ${next} XP</span></div><div class="level-bar"><i style="width:${Math.min(100,Math.max(0,progress))}%"></i></div>`;
+  const start=Number(u.level_start_xp||0), next=Number(u.level_next_xp||100);
+  return `<div class="level-line"><span>Level ${u.level||1}</span><span>${u.xp} / ${next} XP</span></div><div class="level-bar"><i style="width:${Math.min(100,Math.max(0,Number(u.level_progress)||0))}%"></i></div>`;
 }
 function discordInfo(u){
   if(!config.discordServerCheckConfigured) return `<div class="discord-status unknown">◌ Discord-Server nicht geprüft</div>`;
@@ -50,11 +47,119 @@ function renderLeaderboard(){
   const u=members.find(x=>x.id===id); if(!u)return;
   $('#page-members').innerHTML=`<div class="profile"><div class="card profile-card"><img class="avatar" src="${esc(avatar(u))}"><h2>${esc(u.global_name||u.username)}</h2><div class="role">${esc(displayRole(u))}</div><p>${esc(u.bio||'Noch keine Beschreibung.')}</p>${discordInfo(u)}${levelInfo(u)}<div class="online-label" style="justify-content:center"><i class="dot ${isOnline(u)?'online':''}"></i>${isOnline(u)?'Online':'Offline'}</div><div class="actions" style="justify-content:center"><button class="primary" onclick="startPrivate(${u.id})">✉ Nachricht</button></div></div><div><div class="section-title"><h2>Account-Informationen</h2></div><div class="info-grid"><div class="card info"><span>Discord-Name</span><strong>${esc(u.username)}</strong></div><div class="card info"><span>Discord-ID</span><strong class="small-value">${esc(u.discord_id||'—')}</strong></div><div class="card info"><span>Discord-Rolle</span><strong>${(u.discord_roles||[]).map(r=>esc(r.name)).join(', ')||'Keine Rolle'}</strong></div><div class="card info"><span>Level</span><strong>${u.level||1}</strong></div><div class="card info"><span>XP</span><strong>${u.xp}</strong></div><div class="card info"><span>Öffentliche Nachrichten</span><strong>${u.message_count||0}</strong></div><div class="card info"><span>Mitglied seit</span><strong>${new Date(u.created_at).toLocaleDateString('de-DE')}</strong></div><div class="card info"><span>Discord-Server</span><strong>${u.discord_in_server?'✓ Mitglied':'✕ Nicht Mitglied'}</strong></div></div></div></div>`;
   go('members',false);
-}async function renderSettings(){if(!me){$('#page-settings').innerHTML='<div class="empty">Bitte melde dich mit Discord an, um Einstellungen zu öffnen.</div>';return}const d=await api('/api/settings');$('#page-settings').innerHTML=`<div class="section-title"><div><h2>⚙ Einstellungen</h2><div class="eyebrow">DEIN ZOCKERFREUNDE-KONTO</div></div></div><div class="settings-grid"><div class="card setting"><h3>Darstellung</h3><p style="color:#8d93ae">Wähle deinen Look.</p><div class="theme-buttons">${['neon','dark','light'].map(t=>`<button class="${d.settings.theme===t?'active':''}" onclick="setTheme('${t}')">${t==='neon'?'✨ Neon':t==='dark'?'🌙 Dunkel':'☀️ Hell'}</button>`).join('')}</div></div><div class="card setting"><h3>Profil</h3><p style="color:#8d93ae">Deine Beschreibung wird anderen Mitgliedern angezeigt.</p><textarea id="bioInput" maxlength="240">${esc(me.bio||'')}</textarea><div class="actions"><button class="primary" onclick="saveBio()">Profil speichern</button></div></div><div class="card setting"><h3>Account</h3><p style="color:#8d93ae">Mit Discord verbunden als <b>${esc(me.global_name||me.username)}</b> · Level <b>${me.level||1}</b> · ${me.xp} XP.<br>${discordInfo(me)}</p><button class="secondary" onclick="logout()">Ausloggen</button></div><div class="card setting"><h3>Discord</h3><p style="color:#8d93ae">Komm direkt in unsere Community.</p><a class="discord-btn" id="settingsDiscord" target="_blank">Discord-Server öffnen ↗</a></div></div>`}
+}async function renderSettings(){
+  if(!me){
+    $('#page-settings').innerHTML='<div class="empty">Bitte melde dich mit Discord an, um Einstellungen zu öffnen.</div>';
+    return;
+  }
+  try{
+    const [accountData,settingsData,adminData]=await Promise.all([
+      api('/api/account'),
+      api('/api/settings'),
+      api('/api/admin/status').catch(()=>({isAdmin:false}))
+    ]);
+    me=accountData.account;
+    members=members.map(x=>x.id===me.id?me:x);
+    const s=settingsData.settings;
+    const isAdmin=Boolean(adminData.isAdmin);
+    let adminHTML='';
+    if(isAdmin){
+      let roleOptions='';
+      try{
+        const rd=await api('/api/admin/discord-roles');
+        roleOptions='<option value="">Discord-Rolle auswählen…</option>'+rd.roles.map(r=>{
+          const color=Number(r.color||0).toString(16).padStart(6,'0');
+          return `<option value="${esc(r.id)}" data-color="#${color}">${esc(r.name)}</option>`;
+        }).join('');
+      }catch{
+        roleOptions='<option value="">Discord-Rollen nicht verfügbar</option>';
+      }
+      adminHTML=`<div class="card setting admin-panel">
+        <div class="admin-title"><div><h3>🛠 Server & Level bearbeiten</h3><p>Nur für konfigurierte Zockerfreunde-Admins. Level werden über XP gespeichert; Discord-Rollen werden direkt über den Bot gesetzt.</p></div><span class="admin-badge">ADMIN</span></div>
+        <div class="admin-member-list">
+          ${members.map(u=>`<div class="admin-member">
+            <div class="member-head"><img class="avatar" src="${esc(avatar(u))}"><div><b>${esc(u.global_name||u.username)}</b><div class="role">${esc(displayRole(u))} · Level ${u.level||1} · ${u.xp} XP</div></div></div>
+            <div class="admin-fields">
+              <label>Level<input class="admin-level" type="number" min="1" max="1000" value="${u.level||1}" data-id="${u.id}"></label>
+              <label>Discord-Rolle<select class="admin-role" data-id="${u.id}">${roleOptions}</select></label>
+              <button class="primary admin-save" data-id="${u.id}">Speichern</button>
+            </div>
+          </div>`).join('')}
+        </div>
+      </div>`;
+    }
+    $('#page-settings').innerHTML=`<div class="section-title"><div><h2>⚙ Einstellungen</h2><div class="eyebrow">DEIN ZOCKERFREUNDE-KONTO</div></div></div>
+      <div class="settings-grid">
+        <div class="card setting">
+          <h3>👤 Account-Informationen</h3>
+          <div class="account-info-list">
+            <div><span>Discord-Name</span><strong>${esc(me.global_name||me.username)}</strong></div>
+            <div><span>Benutzername</span><strong>${esc(me.username)}</strong></div>
+            <div><span>Discord-ID</span><strong class="small-value">${esc(me.discord_id||'—')}</strong></div>
+            <div><span>Discord-Rolle</span><strong>${esc(displayRole(me))}</strong></div>
+            <div><span>Mitglied seit</span><strong>${me.created_at?new Date(me.created_at).toLocaleDateString('de-DE'):'—'}</strong></div>
+            <div><span>Nachrichten</span><strong>${me.message_count||0}</strong></div>
+          </div>
+          ${discordInfo(me)}
+          <button class="secondary" onclick="refreshAccount()">↻ Discord & Konto aktualisieren</button>
+        </div>
+        <div class="card setting">
+          <h3>⭐ Level & Fortschritt</h3>
+          <div class="big-level"><strong>Level ${me.level||1}</strong><span>${me.xp} XP</span></div>
+          ${levelInfo(me)}
+          <p class="setting-note">Du erhältst XP durch Community-Aktivität. Der Fortschritt wird automatisch in der Rangliste aktualisiert.</p>
+        </div>
+        <div class="card setting">
+          <h3>Darstellung</h3><p style="color:#8d93ae">Wähle deinen Look.</p>
+          <div class="theme-buttons">${['neon','dark','light'].map(t=>`<button class="${s.theme===t?'active':''}" onclick="setTheme('${t}')">${t==='neon'?'✨ Neon':t==='dark'?'🌙 Dunkel':'☀️ Hell'}</button>`).join('')}</div>
+        </div>
+        <div class="card setting">
+          <h3>Profil</h3><p style="color:#8d93ae">Deine Beschreibung wird anderen Mitgliedern angezeigt.</p>
+          <textarea id="bioInput" maxlength="240">${esc(me.bio||'')}</textarea><div class="actions"><button class="primary" onclick="saveBio()">Profil speichern</button></div>
+        </div>
+        <div class="card setting">
+          <h3>Discord</h3><p style="color:#8d93ae">${config.discordServerCheckConfigured?'Der Server-Check ist aktiv.':'Der Server-Check ist noch nicht konfiguriert.'}</p>
+          <a class="discord-btn" id="settingsDiscord" target="_blank">Discord-Server öffnen ↗</a>
+        </div>
+        <div class="card setting">
+          <h3>Account</h3><p style="color:#8d93ae">Mit Discord verbunden als <b>${esc(me.global_name||me.username)}</b>.</p>
+          <button class="secondary" onclick="logout()">Ausloggen</button>
+        </div>
+      </div>${adminHTML}`;
+    const invite=config.discordInvite||'';
+    if(invite) $('#settingsDiscord').href=invite;
+    if(isAdmin) $$('.admin-save').forEach(btn=>btn.onclick=()=>saveAdminMember(Number(btn.dataset.id)));
+  }catch(e){
+    console.error(e);
+    $('#page-settings').innerHTML='<div class="empty">Die Account-Daten konnten nicht geladen werden. Bitte aktualisiere die Seite.</div>';
+  }
+}
+async function refreshAccount(){
+  try{
+    const d=await api('/api/account');
+    me=d.account;
+    members=members.map(x=>x.id===me.id?me:x);
+    toast('Discord & Konto aktualisiert');
+    renderTop();renderHome();renderLeaderboard();await renderSettings();
+  }catch(e){toast('Aktualisierung fehlgeschlagen');}
+}
+async function saveAdminMember(id){
+  const levelInput=$(`.admin-level[data-id="${id}"]`);
+  const roleInput=$(`.admin-role[data-id="${id}"]`);
+  const level=Number(levelInput?.value);
+  if(!Number.isFinite(level)||level<1||level>1000){toast('Ungültiges Level');return}
+  try{
+    const d=await api('/api/admin/member/'+id,{method:'POST',body:JSON.stringify({level,roleId:roleInput?.value||''})});
+    members=members.map(u=>u.id===id?d.member:u);
+    if(me&&me.id===id) me=d.member;
+    toast(d.changed?.length?`Gespeichert: ${d.changed.join(' · ')}`:'Keine Änderung');
+    renderHome();renderLeaderboard();await renderSettings();
+  }catch(e){toast('Speichern fehlgeschlagen: '+(e.message||'Fehler'))}
+}
 async function saveBio(){await api('/api/profile',{method:'POST',body:JSON.stringify({bio:$('#bioInput').value})});const d=await api('/api/me');me=d.user;members=members.map(x=>x.id===me.id?me:x);toast('Profil gespeichert');renderMembers();renderHome()}
 async function setTheme(theme){document.body.classList.remove('light','dark');if(theme!=='neon')document.body.classList.add(theme);await api('/api/settings',{method:'POST',body:JSON.stringify({theme})});renderSettings()}
 async function logout(){await api('/auth/logout',{method:'POST'});location.reload()}
-function connectSocket(){if(socket)return;socket=io();socket.on('public_message',m=>{if(me&&m.user_id===me.id){me={...me,xp:(Number(me.xp)||0)+2,message_count:(me.message_count||0)+1};members=members.map(u=>u.id===me.id?me:u);renderTop();renderHome();renderLeaderboard();if($('.page.active')?.id==='page-members')renderMembers()}const e=$('#publicMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollMsgs()}});socket.on('private_message',m=>{if(currentPrivate&&(m.sender_id===currentPrivate.id||m.receiver_id===currentPrivate.id)){const e=$('#privateMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollPrivate()}}});socket.on('presence',p=>{members=members.map(u=>u.id===p.userId?{...u,last_seen:p.status==='online'?new Date().toISOString():u.last_seen}:u);renderHome();if($('.page.active')?.id==='page-members')renderMembers()});}
+function connectSocket(){if(socket)return;socket=io();socket.on('public_message',m=>{if(me&&m.user_id===me.id){me={...me,xp:me.xp+2,message_count:(me.message_count||0)+1};me.level=levelFromXPClient(me.xp);me.level_start_xp=levelStartXPClient(me.level);me.level_next_xp=levelNextXPClient(me.level);me.level_progress=Math.min(100,Math.max(0,((me.xp-me.level_start_xp)/(me.level_next_xp-me.level_start_xp))*100));members=members.map(u=>u.id===me.id?me:u);if($('#page-leaderboard')?.classList.contains('active'))renderLeaderboard();}const e=$('#publicMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollMsgs()}});socket.on('private_message',m=>{if(currentPrivate&&(m.sender_id===currentPrivate.id||m.receiver_id===currentPrivate.id)){const e=$('#privateMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollPrivate()}}});socket.on('presence',p=>{members=members.map(u=>u.id===p.userId?{...u,last_seen:p.status==='online'?new Date().toISOString():u.last_seen}:u);renderHome();if($('.page.active')?.id==='page-members')renderMembers()});}
 async function go(page,update=true){
   if(protectedPages.has(page)&&!me){showLoginGate();return}
   $$(' .page').forEach(p=>p.classList.remove('active'));$(`#page-${page}`).classList.add('active');

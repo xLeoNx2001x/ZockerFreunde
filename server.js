@@ -193,14 +193,15 @@ app.get('/health', async (req, res) => {
 });
 app.get('/api/config', (req, res) => res.json({
   discordInvite: process.env.DISCORD_INVITE_URL || '',
-  discordServerCheckConfigured: Boolean(process.env.DISCORD_GUILD_ID && process.env.DISCORD_BOT_TOKEN)
+  discordServerCheckConfigured: Boolean(process.env.DISCORD_GUILD_ID && process.env.DISCORD_BOT_TOKEN),
+  adminConfigured: Boolean(process.env.DISCORD_ADMIN_IDS)
 }));
 app.get('/api/me', async (req, res) => { const u = await currentUser(req); res.json({ user: u ? await publicUser(u) : null }); });
-app.get('/api/members', requireUser, async (req, res) => {
+app.get('/api/members', async (req, res) => {
   const users = await db.all('SELECT * FROM users ORDER BY xp DESC, username ASC');
   res.json({ members: await getPublicUsers(users) });
 });
-app.get('/api/member/:id', requireUser, async (req, res) => {
+app.get('/api/member/:id', async (req, res) => {
   const u = await db.get('SELECT * FROM users WHERE id=$1', [Number(req.params.id)]);
   if (!u) return res.status(404).json({ error: 'Nicht gefunden' });
   res.json({ member: await publicUser(u) });
@@ -217,7 +218,7 @@ app.get('/api/leaderboard', async (req, res) => {
   const users = await db.all('SELECT * FROM users ORDER BY xp DESC, username ASC LIMIT 100');
   res.json({ members: await getPublicUsers(users) });
 });
-app.get('/api/chat/public', requireUser, async (req, res) => {
+app.get('/api/chat/public', async (req, res) => {
   const rows = await db.all(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM public_messages m JOIN users u ON u.id=m.user_id ORDER BY m.id DESC LIMIT 80`);
   res.json({ messages: rows.reverse() });
 });
@@ -226,6 +227,91 @@ app.get('/api/chat/private/:id', requireUser, async (req, res) => {
   const rows = await db.all(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM private_messages m JOIN users u ON u.id=m.sender_id WHERE (sender_id=$1 AND receiver_id=$2) OR (sender_id=$3 AND receiver_id=$4) ORDER BY m.id ASC LIMIT 200`, [req.user.id, other, other, req.user.id]);
   res.json({ messages: rows });
 });
+
+function adminIds() {
+  return String(process.env.DISCORD_ADMIN_IDS || '')
+    .split(',')
+    .map(x => x.trim())
+    .filter(Boolean);
+}
+async function requireAdmin(req, res, next) {
+  try {
+    const u = await currentUser(req);
+    if (!u) return res.status(401).json({ error: 'Nicht angemeldet' });
+    if (!adminIds().includes(String(u.discord_id))) {
+      return res.status(403).json({ error: 'Keine Admin-Berechtigung' });
+    }
+    req.user = u;
+    next();
+  } catch (e) {
+    console.error('Admin-Prüfung:', e);
+    res.status(500).json({ error: 'Serverfehler' });
+  }
+}
+
+app.get('/api/admin/status', requireUser, async (req, res) => {
+  res.json({ isAdmin: adminIds().includes(String(req.user.discord_id)) });
+});
+
+app.get('/api/admin/discord-roles', requireAdmin, async (req, res) => {
+  const roles = await discordRequest(`/guilds/${process.env.DISCORD_GUILD_ID}/roles`);
+  if (!roles || !Array.isArray(roles)) return res.status(503).json({ error: 'Discord-Rollen konnten nicht geladen werden.' });
+  res.json({
+    roles: roles
+      .filter(r => r.name !== '@everyone')
+      .sort((a,b) => (b.position || 0) - (a.position || 0))
+      .map(r => ({ id: r.id, name: r.name, color: r.color || 0, position: r.position || 0 }))
+  });
+});
+
+app.post('/api/admin/member/:id', requireAdmin, async (req, res) => {
+  const memberId = Number(req.params.id);
+  if (!Number.isInteger(memberId)) return res.status(400).json({ error: 'Ungültige Mitglied-ID' });
+
+  const target = await db.get('SELECT * FROM users WHERE id=$1', [memberId]);
+  if (!target) return res.status(404).json({ error: 'Mitglied nicht gefunden' });
+
+  let changed = [];
+  if (req.body.level !== undefined && req.body.level !== '') {
+    const level = Math.max(1, Math.min(1000, Math.floor(Number(req.body.level))));
+    if (!Number.isFinite(level)) return res.status(400).json({ error: 'Ungültiges Level' });
+    const xp = levelStartXP(level);
+    await db.run('UPDATE users SET xp=$1 WHERE id=$2', [xp, memberId]);
+    changed.push(`Level ${level}`);
+  } else if (req.body.xp !== undefined) {
+    const xp = Math.max(0, Math.min(1000000000, Math.floor(Number(req.body.xp))));
+    if (!Number.isFinite(xp)) return res.status(400).json({ error: 'Ungültige XP' });
+    await db.run('UPDATE users SET xp=$1 WHERE id=$2', [xp, memberId]);
+    changed.push(`${xp} XP`);
+  }
+
+  // Optional: assign a real Discord role through the bot.
+  if (req.body.roleId && process.env.DISCORD_GUILD_ID && process.env.DISCORD_BOT_TOKEN) {
+    const role = await discordRequest(`/guilds/${process.env.DISCORD_GUILD_ID}/roles`);
+    const wanted = Array.isArray(role) ? role.find(r => r.id === String(req.body.roleId)) : null;
+    if (!wanted || wanted.name === '@everyone') return res.status(400).json({ error: 'Ungültige Discord-Rolle' });
+
+    const url = `https://discord.com/api/v10/guilds/${process.env.DISCORD_GUILD_ID}/members/${target.discord_id}/roles/${wanted.id}`;
+    const rr = await fetch(url, {
+      method: 'PUT',
+      headers: { Authorization: `Bot ${process.env.DISCORD_BOT_TOKEN}` }
+    });
+    if (!rr.ok) return res.status(502).json({ error: `Discord-Rolle konnte nicht gesetzt werden (${rr.status}).` });
+    changed.push(`Rolle ${wanted.name}`);
+
+    const check = await syncDiscordMember(target.discord_id);
+    if (check) {
+      await db.run(
+        'UPDATE users SET discord_in_server=$1,discord_roles=$2,role=$3 WHERE id=$4',
+        [check.inServer, JSON.stringify(check.roles), check.roles[0]?.name || (check.inServer ? 'Mitglied' : 'Nicht auf Server'), memberId]
+      );
+    }
+  }
+
+  const fresh = await db.get('SELECT * FROM users WHERE id=$1', [memberId]);
+  res.json({ ok: true, changed, member: await publicUser(fresh) });
+});
+
 app.get('/api/settings', requireUser, async (req, res) => {
   let s = await db.get('SELECT * FROM settings WHERE user_id=$1', [req.user.id]);
   if (!s) { await db.run('INSERT INTO settings(user_id) VALUES($1) ON CONFLICT(user_id) DO NOTHING', [req.user.id]); s = await db.get('SELECT * FROM settings WHERE user_id=$1', [req.user.id]); }

@@ -35,3 +35,10 @@ Dafür müssen die Environment Variables gesetzt sein. Der Healthcheck ist unter
 ## Render
 
 `render.yaml` enthält bereits die benötigten Environment-Variablen und startet den Server mit `npm start`.
+
+
+## Admin-Funktionen (3.4)
+Setze auf Render die Environment Variable `DISCORD_ADMIN_IDS` auf eine oder mehrere Discord-User-IDs, kommasepariert.
+Beispiel: `123456789012345678,987654321098765432`
+
+Admins sehen unter **Einstellungen → Server & Level bearbeiten** die Mitgliederverwaltung. Dort können Level gesetzt und Discord-Rollen über den Bot vergeben werden. Dafür benötigt der Discord-Bot die passenden Server-/Rollenrechte.

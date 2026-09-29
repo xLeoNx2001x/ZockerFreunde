@@ -27,3 +27,5 @@ services:
         sync: false
       - key: DISCORD_BOT_TOKEN
         sync: false
+      - key: DISCORD_ADMIN_IDS
+        sync: false
