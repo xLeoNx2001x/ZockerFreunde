@@ -43,3 +43,18 @@ body:after{content:"";position:fixed;inset:0;pointer-events:none;z-index:-1;back
 .light{background:radial-gradient(700px 500px at 8% 5%,color-mix(in srgb,var(--accent) 15%,transparent),transparent 65%),radial-gradient(700px 500px at 92% 10%,color-mix(in srgb,var(--accent2) 13%,transparent),transparent 65%),linear-gradient(145deg,#eef3ff,#f8faff 55%,color-mix(in srgb,var(--accent3) 4%,white));color:var(--text)}
 .light:after{opacity:.3}.light .card,.light .stat{background:rgba(255,255,255,.72)}.light .sidebar,.light .topbar{background:rgba(248,250,255,.82)}.light .login-gate{background:rgba(235,240,255,.68)}.light .login-gate-card{background:rgba(255,255,255,.94);color:#111426}.light .gate-close{color:#111426}
 @media(max-width:760px){.landing-info{grid-template-columns:1fr}.hero-pills span{font-size:11px}.login-gate-card{padding:25px}}
+
+/* Zockerfreunde 3.2 account / XP / Discord */
+.discord-status{margin:10px 0;padding:9px 11px;border-radius:10px;font-size:12px;font-weight:800;background:rgba(255,255,255,.035);border:1px solid var(--line)}
+.discord-status.yes{color:#62f2ad;border-color:rgba(48,229,139,.25);box-shadow:0 0 18px rgba(48,229,139,.07)}
+.discord-status.no{color:#ff7b96;border-color:rgba(255,85,119,.22)}
+.discord-status.unknown{color:#aeb5ca}
+.role-chip{display:inline-block;margin:3px 3px 0 0;padding:3px 7px;border-radius:999px;border:1px solid color-mix(in srgb,var(--role-color) 55%,transparent);color:var(--role-color);font-size:10px;background:color-mix(in srgb,var(--role-color) 9%,transparent)}
+.level-line{display:flex;justify-content:space-between;gap:10px;color:#9da5bd;font-size:11px;margin:10px 0 5px}
+.level-line span:first-child{font-weight:900;color:var(--accent)}
+.level-bar{height:7px;background:rgba(255,255,255,.07);border-radius:99px;overflow:hidden;margin-bottom:9px}
+.level-bar i{display:block;height:100%;border-radius:99px;background:linear-gradient(90deg,var(--accent),var(--accent2));box-shadow:0 0 12px var(--glow)}
+.rank-help{padding:14px 15px;border-bottom:1px solid var(--line);color:#8f97ad;font-size:12px}
+.rank-level{min-width:150px}
+.rank-level .level-line{margin:0 0 5px}
+.small-value{font-size:13px!important;word-break:break-all}

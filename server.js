@@ -64,6 +64,61 @@ CREATE TABLE IF NOT EXISTS settings (
 );
 `);
 
+// 3.2 migrations
+const columns = db.prepare("PRAGMA table_info(users)").all().map(c => c.name);
+const addColumn = (name, sql) => { if (!columns.includes(name)) db.exec(`ALTER TABLE users ADD COLUMN ${sql}`); };
+addColumn('discord_in_server', 'discord_in_server INTEGER NOT NULL DEFAULT 0');
+addColumn('discord_roles', "discord_roles TEXT NOT NULL DEFAULT '[]'");
+addColumn('last_login_reward', "last_login_reward TEXT NOT NULL DEFAULT ''");
+
+const germanDay = () => new Intl.DateTimeFormat('de-DE', {
+  timeZone: 'Europe/Berlin', year: 'numeric', month: '2-digit', day: '2-digit'
+}).format(new Date());
+
+const levelFromXP = xp => Math.max(1, Math.floor(Math.sqrt(Math.max(0, Number(xp) || 0) / 100)) + 1);
+const levelStartXP = level => Math.max(0, Math.pow(Math.max(1, level - 1), 2) * 100);
+const levelNextXP = level => Math.pow(Math.max(1, level), 2) * 100;
+
+async function discordRequest(url) {
+  const token = process.env.DISCORD_BOT_TOKEN;
+  if (!token) return null;
+  const r = await fetch(`https://discord.com/api/v10${url}`, {
+    headers: { Authorization: `Bot ${token}` }
+  });
+  if (r.status === 404) return { notFound: true };
+  if (!r.ok) throw new Error(`Discord API ${r.status}`);
+  return r.json();
+}
+
+async function syncDiscordMember(discordId) {
+  const guildId = process.env.DISCORD_GUILD_ID;
+  if (!guildId || !process.env.DISCORD_BOT_TOKEN) return null;
+  try {
+    const [member, roles] = await Promise.all([
+      discordRequest(`/guilds/${guildId}/members/${discordId}`),
+      discordRequest(`/guilds/${guildId}/roles`)
+    ]);
+    if (!member || member.notFound) return { inServer:false, roles:[] };
+    const roleMap = new Map((roles || []).map(r => [r.id, r]));
+    const memberRoles = (member.roles || []).map(id => {
+      const r = roleMap.get(id);
+      return r ? { id:r.id, name:r.name, color:r.color || 0 } : null;
+    }).filter(Boolean).filter(r => r.name !== '@everyone');
+    return { inServer:true, roles:memberRoles };
+  } catch (e) {
+    console.error('Discord-Mitglied konnte nicht geprüft werden:', e.message);
+    return null;
+  }
+}
+
+function awardDailyLogin(userId) {
+  const today = germanDay();
+  const u = db.prepare('SELECT last_login_reward FROM users WHERE id=?').get(userId);
+  if (!u || u.last_login_reward === today) return false;
+  db.prepare('UPDATE users SET xp=xp+25,last_login_reward=? WHERE id=?').run(today, userId);
+  return true;
+}
+
 const clean = s => String(s ?? '').replace(/[<>]/g, '').trim();
 const tokenHash = token => crypto.createHash('sha256').update(token).digest('hex');
 const sign = value => crypto.createHmac('sha256', SECRET).update(value).digest('hex');
@@ -83,7 +138,19 @@ function currentUser(req) {
   return row || null;
 }
 function publicUser(u) {
-  return { id:u.id, username:u.username, global_name:u.global_name, avatar:u.avatar, role:u.role, bio:u.bio, xp:u.xp, points:u.points, games_played:u.games_played, wins:u.wins, last_seen:u.last_seen, created_at:u.created_at };
+  const roles = (() => { try { return JSON.parse(u.discord_roles || '[]'); } catch { return []; } })();
+  const messageCount = db.prepare('SELECT COUNT(*) AS count FROM public_messages WHERE user_id=?').get(u.id).count;
+  const level = levelFromXP(u.xp);
+  const start = levelStartXP(level);
+  const next = levelNextXP(level);
+  return {
+    id:u.id, username:u.username, global_name:u.global_name, avatar:u.avatar,
+    role:u.role, discord_id:u.discord_id, discord_in_server:Boolean(u.discord_in_server),
+    discord_roles:roles, bio:u.bio, xp:u.xp, level, level_start_xp:start,
+    level_next_xp:next, level_progress:Math.min(100, Math.max(0, ((u.xp-start)/(next-start))*100)),
+    points:u.points, message_count:messageCount, games_played:0, wins:0,
+    last_seen:u.last_seen, created_at:u.created_at
+  };
 }
 function requireUser(req,res,next){ const u=currentUser(req); if(!u) return res.status(401).json({error:'Nicht angemeldet'}); req.user=u; next(); }
 
@@ -92,10 +159,13 @@ app.use(cookieParser());
 app.use(express.static(path.join(__dirname,'public')));
 
 app.get('/health', (req,res)=>res.json({ok:true}));
-app.get('/api/config',(req,res)=>res.json({discordInvite:process.env.DISCORD_INVITE_URL||''}));
+app.get('/api/config',(req,res)=>res.json({
+  discordInvite:process.env.DISCORD_INVITE_URL||'',
+  discordServerCheckConfigured:Boolean(process.env.DISCORD_GUILD_ID && process.env.DISCORD_BOT_TOKEN)
+}));
 app.get('/api/me', (req,res)=>{ const u=currentUser(req); res.json({user:u?publicUser(u):null}); });
 app.get('/api/members', (req,res)=>{
-  const users = db.prepare('SELECT * FROM users ORDER BY points DESC, xp DESC, username COLLATE NOCASE ASC').all();
+  const users = db.prepare('SELECT * FROM users ORDER BY xp DESC, username COLLATE NOCASE ASC').all();
   res.json({members:users.map(publicUser)});
 });
 app.get('/api/member/:id',(req,res)=>{
@@ -103,8 +173,18 @@ app.get('/api/member/:id',(req,res)=>{
   if(!u) return res.status(404).json({error:'Nicht gefunden'});
   res.json({member:publicUser(u)});
 });
+app.get('/api/account',requireUser,async(req,res)=>{
+  const check = await syncDiscordMember(req.user.discord_id);
+  if (check) {
+    db.prepare('UPDATE users SET discord_in_server=?,discord_roles=?,role=? WHERE id=?')
+      .run(check.inServer ? 1 : 0, JSON.stringify(check.roles),
+        check.roles[0]?.name || (check.inServer ? 'Mitglied' : 'Nicht auf Server'), req.user.id);
+  }
+  const u=db.prepare('SELECT * FROM users WHERE id=?').get(req.user.id);
+  res.json({account:publicUser(u), discordCheckConfigured:Boolean(process.env.DISCORD_GUILD_ID && process.env.DISCORD_BOT_TOKEN)});
+});
 app.get('/api/leaderboard',(req,res)=>{
-  const users=db.prepare('SELECT * FROM users ORDER BY points DESC, xp DESC LIMIT 100').all();
+  const users=db.prepare('SELECT * FROM users ORDER BY xp DESC, username COLLATE NOCASE ASC LIMIT 100').all();
   res.json({members:users.map(publicUser)});
 });
 app.get('/api/chat/public',(req,res)=>{
@@ -159,6 +239,19 @@ app.get('/auth/discord/callback', async (req,res)=>{
       db.prepare('UPDATE users SET username=?,global_name=?,avatar=?,last_seen=CURRENT_TIMESTAMP WHERE id=?').run(d.username,d.global_name||d.username,avatar,u.id);
       u=db.prepare('SELECT * FROM users WHERE id=?').get(u.id);
     }
+
+    // Discord-Serverzugehörigkeit und Rollen synchronisieren.
+    const discordMember = await syncDiscordMember(d.id);
+    if (discordMember) {
+      db.prepare('UPDATE users SET discord_in_server=?,discord_roles=?,role=? WHERE id=?')
+        .run(discordMember.inServer ? 1 : 0, JSON.stringify(discordMember.roles),
+          discordMember.roles[0]?.name || (discordMember.inServer ? 'Mitglied' : 'Nicht auf Server'), u.id);
+    }
+
+    // +25 XP genau einmal pro Kalendertag (deutsche Zeitzone).
+    awardDailyLogin(u.id);
+    u=db.prepare('SELECT * FROM users WHERE id=?').get(u.id);
+
     const tokenValue=issueToken(u.id);
     res.cookie('zf_token',tokenValue,{httpOnly:true,secure:process.env.NODE_ENV==='production',sameSite:'lax',maxAge:30*24*60*60*1000});
     res.clearCookie('zf_oauth_state');
@@ -187,12 +280,6 @@ io.on('connection',socket=>{
     const info=db.prepare('INSERT INTO private_messages(sender_id,receiver_id,message) VALUES(?,?,?)').run(socket.user.id,receiverId,message);
     const row=db.prepare(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM private_messages m JOIN users u ON u.id=m.sender_id WHERE m.id=?`).get(info.lastInsertRowid);
     for(const [sid] of io.sockets.sockets){const s=io.sockets.sockets.get(sid);if(s?.user?.id===receiverId||s?.user?.id===socket.user.id)s.emit('private_message',row);}
-  });
-  socket.on('game_score',data=>{
-    if(!socket.user)return;
-    const points=Math.max(0,Math.min(100,Number(data?.points)||0));
-    db.prepare('UPDATE users SET games_played=games_played+1, xp=xp+?, points=points+?, wins=wins+? WHERE id=?').run(Math.floor(points/2),points,points>=50?1:0,socket.user.id);
-    socket.emit('game_score_saved',{points});
   });
   socket.on('disconnect',()=>{if(socket.user){const n=(online.get(socket.user.id)||1)-1;if(n<=0){online.delete(socket.user.id);io.emit('presence',{userId:socket.user.id,status:'offline'});}else online.set(socket.user.id,n);}});
 });

@@ -6,7 +6,7 @@ services:
     startCommand: npm start
     envVars:
       - key: NODE_VERSION
-        value: 20
+        value: 24.21.0
       - key: DISCORD_CLIENT_ID
         sync: false
       - key: DISCORD_CLIENT_SECRET
@@ -16,4 +16,8 @@ services:
       - key: SESSION_SECRET
         generateValue: true
       - key: DISCORD_INVITE_URL
+        sync: false
+      - key: DISCORD_GUILD_ID
+        sync: false
+      - key: DISCORD_BOT_TOKEN
         sync: false
