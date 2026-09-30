@@ -368,7 +368,7 @@ app.post('/api/friends/:id/favorite', requireUser, async (req,res) => {
   const targetId=Number(req.params.id);
   const f=await db.get(`SELECT * FROM friendships WHERE status='accepted' AND ((requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1))`,[req.user.id,targetId]);
   if(!f) return res.status(404).json({error:'Freundschaft nicht gefunden'});
-  const column=f.requester_id===req.user.id?'requester_favorite':'addressee_favorite';
+  const column=Number(f.requester_id)===Number(req.user.id)?'requester_favorite':'addressee_favorite';
   const value=req.body.favorite!==false;
   await db.run(`UPDATE friendships SET ${column}=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2`,[value,f.id]);
   res.json({ok:true,favorite:value});
