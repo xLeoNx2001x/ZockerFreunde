@@ -8,6 +8,7 @@ function showLoginGate(){const e=$('#loginGate');if(!e)return;e.classList.add('s
 function closeLoginGate(){const e=$('#loginGate');if(!e)return;e.classList.remove('show');e.setAttribute('aria-hidden','true');}
 
 const esc=s=>String(s??'').replace(/[&<>"']/g,m=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+function sameId(a,b){return String(a??'')===String(b??'')}
 function avatar(u){return u?.avatar||'/logo.png'}
 function isOnline(u){
   if(!u?.last_seen)return false;
@@ -53,14 +54,14 @@ function checkStoredLevel(u){
   if(previous>0&&current>previous)showLevelUp(current);
   localStorage.setItem(key,String(current));
 }
-function friendRelation(id){const n=Number(id);if(friendsData.friends.some(u=>u.id===n))return 'friend';if(friendsData.sent.some(u=>u.id===n))return 'sent';if(friendsData.incoming.some(u=>u.id===n))return 'incoming';if(friendsData.blocked.some(u=>u.id===n))return 'blocked';return 'none';}
-function friendButton(u){if(!me||u.id===me.id)return '';const id=Number(u.id),r=friendRelation(id);if(r==='none')return `<button id="friend-add-${id}" class="friend-add-btn" title="Freundschaftsanfrage senden" onclick="sendFriendRequest(${id},this);event.stopPropagation()">👤<b>＋</b></button>`;if(r==='friend')return `<button class="friend-add-btn friend-ok" title="Bereits befreundet" onclick="openFriendMenu(${id});event.stopPropagation()">✓</button>`;if(r==='incoming')return `<button class="friend-add-btn" title="Freundschaftsanfrage beantworten" onclick="go('friends');event.stopPropagation()">📩</button>`;if(r==='sent')return `<button class="friend-add-btn friend-sent" title="Anfrage gesendet" disabled>✓</button>`;return `<button class="friend-add-btn friend-blocked" title="Blockiert" onclick="go('friends');event.stopPropagation()">⊘</button>`;}
-function memberCard(u){return `<div class="card member-card"><div class="member-head member-head-friend"><img class="avatar" src="${esc(avatar(u))}"><div><div class="member-name">${esc(u.global_name||u.username)}</div><div class="role">${esc(displayRole(u))}</div></div>${friendButton(u)}</div><p>${esc(u.bio||'Noch keine Beschreibung.')}</p>${discordInfo(u)}${levelInfo(u)}<div class="online-label"><i class="dot ${isOnline(u)?'online':''}"></i>${isOnline(u)?'Online':'Offline'} · ${u.message_count||0} Nachrichten</div><div class="actions"><button class="secondary" onclick="showProfile('${u.id}')">Profil ansehen</button><button class="secondary" onclick="startPrivate(${u.id})">Nachricht</button></div></div>`}
+function friendRelation(id){if(friendsData.friends.some(u=>sameId(u.id,id)))return 'friend';if(friendsData.sent.some(u=>sameId(u.id,id)))return 'sent';if(friendsData.incoming.some(u=>sameId(u.id,id)))return 'incoming';if(friendsData.blocked.some(u=>sameId(u.id,id)))return 'blocked';return 'none';}
+function friendButton(u){if(!me||sameId(u.id,me.id))return '';const id=String(u.id),r=friendRelation(id);if(r==='none')return `<button id="friend-add-${id}" class="friend-add-btn" title="Freundschaftsanfrage senden" onclick="sendFriendRequest(${JSON.stringify(String(id))},this);event.stopPropagation()">👤<b>＋</b></button>`;if(r==='friend')return `<button class="friend-add-btn friend-ok" title="Bereits befreundet" onclick="openFriendMenu(${JSON.stringify(String(id))});event.stopPropagation()">✓</button>`;if(r==='incoming')return `<button class="friend-add-btn" title="Freundschaftsanfrage beantworten" onclick="go('friends');event.stopPropagation()">📩</button>`;if(r==='sent')return '';return `<button class="friend-add-btn friend-blocked" title="Blockiert" onclick="go('friends');event.stopPropagation()">⊘</button>`;}
+function memberCard(u){return `<div class="card member-card"><div class="member-head member-head-friend"><img class="avatar" src="${esc(avatar(u))}"><div><div class="member-name">${esc(u.global_name||u.username)}</div><div class="role">${esc(displayRole(u))}</div></div>${friendButton(u)}</div><p>${esc(u.bio||'Noch keine Beschreibung.')}</p>${discordInfo(u)}${levelInfo(u)}<div class="online-label"><i class="dot ${isOnline(u)?'online':''}"></i>${isOnline(u)?'Online':'Offline'} · ${u.message_count||0} Nachrichten</div><div class="actions"><button class="secondary" onclick="showProfile('${u.id}')">Profil ansehen</button><button class="secondary" onclick="startPrivate(${JSON.stringify(String(u.id))})">Nachricht</button></div></div>`}
 async function load(){
   const d=await api('/api/me');me=d.user;
   const m=await api('/api/members');members=m.members;
   if(me){try{friendsData=await api('/api/friends')}catch{friendsData={friends:[],sent:[],incoming:[],blocked:[]};}}
-  if(me){checkStoredLevel(me);members=members.map(u=>u.id===me.id?{...u,last_seen:new Date().toISOString()}:u);me=members.find(u=>u.id===me.id)||me;}
+  if(me){checkStoredLevel(me);members=members.map(u=>sameId(u.id,me.id)?{...u,last_seen:new Date().toISOString()}:u);me=members.find(u=>sameId(u.id,me.id))||me;}
   renderTop();renderHome();connectSocket();
 }
 function renderTop(){ $('#topUser').innerHTML=me?`<div class="user-mini"><i class="dot online"></i><img class="avatar" src="${esc(avatar(me))}"><b>${esc(me.global_name||me.username)}</b></div>`:`<a class="primary" href="/auth/discord">Mit Discord anmelden</a>`; }
@@ -80,7 +81,7 @@ async function clearPublicChat(){
   catch(e){toast('Chat konnte nicht geleert werden.');}
 }
 async function loadPublic(){try{const d=await api('/api/chat/public');$('#publicMessages').innerHTML=d.messages.map(messageHTML).join('');scrollMsgs()}catch{}}
-function messageHTML(m){const mine=me&&m.user_id===me.id;return `<div class="msg ${mine?'me':''}"><img class="avatar" src="${esc(avatar(m))}"><div><div class="meta">${esc(m.global_name||m.username)} · ${esc(m.role)}</div><div class="bubble">${esc(m.message)}</div></div></div>`}
+function messageHTML(m){const mine=me&&sameId(m.user_id,me.id);return `<div class="msg ${mine?'me':''}"><img class="avatar" src="${esc(avatar(m))}"><div><div class="meta">${esc(m.global_name||m.username)} · ${esc(m.role)}</div><div class="bubble">${esc(m.message)}</div></div></div>`}
 function scrollMsgs(){const e=$('#publicMessages');if(e)e.scrollTop=e.scrollHeight}
 async function loadFriends(){if(!me)return;try{friendsData=await api('/api/friends')}catch(e){console.warn('Freunde konnten nicht geladen werden:',e)}}
 function friendPerson(u,extra=''){return `<div class="friend-row"><img class="avatar" src="${esc(avatar(u))}"><div class="friend-main"><b>${esc(u.global_name||u.username)}</b><span>${esc(displayRole(u))}</span></div>${extra}</div>`}
@@ -93,26 +94,85 @@ function renderFriends(){
   const panel=$('#friendPanel');
   function draw(tab){
     $$('.friend-tab').forEach(b=>b.classList.toggle('active',b.dataset.ft===tab));
-    if(tab==='friends') panel.innerHTML=friends.length?friends.map(u=>friendPerson(u,`<div class="friend-actions"><span class="favorite-mark">${u.favorite?'★':''}</span><button class="secondary small-btn" onclick="openFriendMenu(${u.id})">Öffnen</button></div>`)).join(''):'<div class="empty">Noch keine Freunde. Geh zu den Mitgliedern und sende eine Anfrage. 👤＋</div>';
+    if(tab==='friends') panel.innerHTML=friends.length?friends.map(u=>friendPerson(u,`<div class="friend-actions"><span class="favorite-mark">${u.favorite?'★':''}</span><button class="secondary small-btn" onclick="openFriendMenu(${JSON.stringify(String(u.id))})">Öffnen</button></div>`)).join(''):'<div class="empty">Noch keine Freunde. Geh zu den Mitgliedern und sende eine Anfrage. 👤＋</div>';
     if(tab==='incoming') panel.innerHTML=incoming.length?incoming.map(u=>friendPerson(u,`<div class="friend-actions"><button class="primary small-btn" onclick="acceptFriend(${u.id})">Annehmen</button><button class="secondary small-btn" onclick="declineFriend(${u.id})">Ablehnen</button></div>`)).join(''):'<div class="empty">Keine offenen Freundschaftsanfragen.</div>';
     if(tab==='sent') panel.innerHTML=sent.length?sent.map(u=>friendPerson(u,`<div class="friend-actions"><span class="pending-label">Gesendet</span><button class="secondary small-btn" onclick="cancelFriend(${u.id})">Zurückziehen</button></div>`)).join(''):'<div class="empty">Keine verschickten Anfragen.</div>';
-    if(tab==='blocked') panel.innerHTML=blocked.length?blocked.map(u=>friendPerson(u,`<div class="friend-actions"><button class="secondary small-btn" onclick="unblockFriend(${u.id})">Entsperren</button></div>`)).join(''):'<div class="empty">Du hast niemanden blockiert.</div>';
+    if(tab==='blocked') panel.innerHTML=blocked.length?blocked.map(u=>friendPerson(u,`<div class="friend-actions"><button class="secondary small-btn" onclick="unblockFriend(${JSON.stringify(String(u.id))})">Entsperren</button></div>`)).join(''):'<div class="empty">Du hast niemanden blockiert.</div>';
   }
   $$('.friend-tab').forEach(b=>b.onclick=()=>draw(b.dataset.ft)); draw('friends');
 }
-async function sendFriendRequest(id,button){if(button?.disabled)return;try{if(button){button.disabled=true;button.classList.add('friend-request-sent');button.title='Anfrage gesendet';}await api('/api/friends/request/'+id,{method:'POST'});await loadFriends();toast('Freundschaftsanfrage gesendet!');setTimeout(()=>renderMembers(),650);}catch(e){if(button){button.disabled=false;button.classList.remove('friend-request-sent');}toast(e.message?.replace(/^.*?\"error\":\"?/, '').replace(/[\"}].*$/,'')||'Anfrage konnte nicht gesendet werden.')}}
-async function acceptFriend(id){try{const target=friendsData.incoming.find(u=>u.id===Number(id));const f=target;/* friendship id is not exposed in publicUser, use lookup helper below */await api('/api/friends/accept-by-user/'+id,{method:'POST'});await loadFriends();renderFriends();toast('Freundschaft angenommen!')}catch(e){toast('Anfrage konnte nicht angenommen werden.')}}
+async function sendFriendRequest(id,button){id=String(id);
+  if(button?.disabled)return;
+  try{
+    if(button){button.disabled=true;button.classList.add('friend-request-sent');button.title='Anfrage gesendet';}
+    await api('/api/friends/request/'+id,{method:'POST'});
+    await loadFriends();
+    setTimeout(()=>button?.remove(),700);
+    toast('Freundschaftsanfrage gesendet!');
+  }catch(e){
+    if(button){button.disabled=false;button.classList.remove('friend-request-sent');}
+    toast('Anfrage konnte nicht gesendet werden.');
+  }
+}
+async function acceptFriend(id){try{const target=friendsData.incoming.find(u=>u.id===String(id));const f=target;/* friendship id is not exposed in publicUser, use lookup helper below */await api('/api/friends/accept-by-user/'+id,{method:'POST'});await loadFriends();renderFriends();toast('Freundschaft angenommen!')}catch(e){toast('Anfrage konnte nicht angenommen werden.')}}
 async function declineFriend(id){try{await api('/api/friends/decline-by-user/'+id,{method:'POST'});await loadFriends();renderFriends();toast('Anfrage abgelehnt.')}catch(e){toast('Anfrage konnte nicht abgelehnt werden.')}}
 async function cancelFriend(id){try{await api('/api/friends/cancel-by-user/'+id,{method:'DELETE'});await loadFriends();renderFriends();toast('Anfrage zurückgezogen.')}catch(e){toast('Anfrage konnte nicht zurückgezogen werden.')}}
-async function removeFriend(id){if(!confirm('Freund wirklich löschen?'))return;try{await api('/api/friends/'+id,{method:'DELETE'});await loadFriends();renderFriends();toast('Freund gelöscht.')}catch(e){toast('Freund konnte nicht gelöscht werden.')}}
-async function toggleFavorite(id,current){try{await api('/api/friends/'+id+'/favorite',{method:'POST',body:JSON.stringify({favorite:!current})});await loadFriends();renderFriends();toast(!current?'Als Favorit markiert.':'Favorit entfernt.')}catch(e){toast('Favorit konnte nicht geändert werden.')}}
-async function blockFriend(id){if(!confirm('Diese Person blockieren? Freundschaft und offene Anfrage werden entfernt.'))return;try{await api('/api/friends/'+id+'/block',{method:'POST'});closeFriendMenu();await loadFriends();renderFriends();toast('Person blockiert.')}catch(e){toast('Blockieren fehlgeschlagen.')}}
-async function unblockFriend(id){try{await api('/api/friends/'+id+'/block',{method:'DELETE'});await loadFriends();renderFriends();toast('Person entsperrt.')}catch(e){toast('Entsperren fehlgeschlagen.')}}
-function openFriendMenu(id){selectedFriend=members.find(u=>u.id===Number(id))||friendsData.friends.find(u=>u.id===Number(id));if(!selectedFriend)return;const current=Boolean(friendsData.friends.find(u=>u.id===Number(id))?.favorite);let old=$('#friendActionModal');if(old)old.remove();const e=document.createElement('div');e.id='friendActionModal';e.className='friend-modal';e.innerHTML=`<div class="friend-modal-card"><button class="gate-close" onclick="closeFriendMenu()">×</button><div class="friend-modal-user"><img class="avatar" src="${esc(avatar(selectedFriend))}"><div><h2>${esc(selectedFriend.global_name||selectedFriend.username)}</h2><span>${esc(displayRole(selectedFriend))}</span></div></div><div class="friend-choice-grid"><button class="friend-choice" onclick="closeFriendMenu();startPrivate(${selectedFriend.id})"><strong>1</strong><span>✉</span><b>Privaten Chat starten</b></button><button class="friend-choice" onclick="toggleFavorite(${selectedFriend.id},${current});closeFriendMenu()"><strong>2</strong><span>${current?'★':'☆'}</span><b>${current?'Favorit entfernen':'Freund favorisieren'}</b></button><button class="friend-choice danger" onclick="removeFriend(${selectedFriend.id});closeFriendMenu()"><strong>3</strong><span>🗑</span><b>Freund löschen</b></button><button class="friend-choice danger" onclick="blockFriend(${selectedFriend.id})"><strong>4</strong><span>⛔</span><b>Freund blockieren</b></button></div></div>`;document.body.appendChild(e);requestAnimationFrame(()=>e.classList.add('show'));}
+async function removeFriend(id){id=String(id);
+  if(!confirm('Freund wirklich löschen?'))return;
+  try{
+    await api('/api/friends/'+encodeURIComponent(id),{method:'DELETE'});
+    await loadFriends();
+    renderMembers();
+    renderFriends();
+    toast('Freund gelöscht. Die 👤＋-Taste ist wieder verfügbar.');
+  }catch(e){toast('Freund konnte nicht gelöscht werden.');}
+}
+async function toggleFavorite(id,current){id=String(id);
+  try{
+    const result=await api('/api/friends/'+encodeURIComponent(id)+'/favorite',{method:'POST',body:JSON.stringify({favorite:!current})});
+    await loadFriends();
+    renderFriends();
+    toast(result.favorite?'Als Favorit markiert.':'Favorit entfernt.');
+  }catch(e){toast('Favorit konnte nicht geändert werden.');}
+}
+async function blockFriend(id){id=String(id);if(!confirm('Diese Person blockieren? Freundschaft und offene Anfrage werden entfernt.'))return;try{await api('/api/friends/'+id+'/block',{method:'POST'});closeFriendMenu();await loadFriends();renderFriends();toast('Person blockiert.')}catch(e){toast('Blockieren fehlgeschlagen.')}}
+async function unblockFriend(id){id=String(id);try{await api('/api/friends/'+id+'/block',{method:'DELETE'});await loadFriends();renderFriends();toast('Person entsperrt.')}catch(e){toast('Entsperren fehlgeschlagen.')}}
+function openFriendMenu(id){
+  const sid=String(id);
+  selectedFriend=members.find(u=>sameId(u.id,sid))||friendsData.friends.find(u=>sameId(u.id,sid));
+  if(!selectedFriend)return;
+  const current=Boolean(friendsData.friends.find(u=>sameId(u.id,sid))?.favorite);
+  let old=$('#friendActionModal');if(old)old.remove();
+  const e=document.createElement('div');e.id='friendActionModal';e.className='friend-modal';
+  const safeId=JSON.stringify(sid);
+  e.innerHTML=`<div class="friend-modal-card">
+    <button class="gate-close" onclick="closeFriendMenu()">×</button>
+    <div class="friend-modal-user"><img class="avatar" src="${esc(avatar(selectedFriend))}">
+      <div><h2>${esc(selectedFriend.global_name||selectedFriend.username)}</h2><span>${esc(displayRole(selectedFriend))}</span></div>
+    </div>
+    <div class="friend-choice-grid">
+      <button class="friend-choice" onclick="closeFriendMenu();startPrivate(${safeId})"><strong>1</strong><span>✉</span><b>Privaten Chat starten</b></button>
+      <button class="friend-choice" onclick="toggleFavorite(${safeId},${current});closeFriendMenu()"><strong>2</strong><span>${current?'★':'☆'}</span><b>${current?'Favorit entfernen':'Freund favorisieren'}</b></button>
+      <button class="friend-choice danger" onclick="removeFriend(${safeId})"><strong>3</strong><span>🗑</span><b>Freund löschen</b></button>
+      <button class="friend-choice danger" onclick="blockFriend(${safeId})"><strong>4</strong><span>⛔</span><b>Freund blockieren</b></button>
+    </div>
+  </div>`;
+  document.body.appendChild(e);requestAnimationFrame(()=>e.classList.add('show'));
+}
 function closeFriendMenu(){const e=$('#friendActionModal');if(e){e.classList.remove('show');setTimeout(()=>e.remove(),180)}selectedFriend=null}
-function renderPrivate(){const list=members.filter(u=>!me||u.id!==me.id);$('#page-private').innerHTML=`<div class="private-layout"><div class="card chat-list"><h3 style="padding:10px 12px">Private Chats</h3>${me?list.map(u=>`<div class="chat-person" onclick="startPrivate(${u.id})"><img class="avatar" src="${esc(avatar(u))}"><div><b>${esc(u.global_name||u.username)}</b><div class="online-label"><i class="dot ${isOnline(u)?'online':''}"></i>${isOnline(u)?'Online':'Offline'}</div></div></div>`).join('')||'<div class="empty">Noch keine anderen Mitglieder.</div>':'<div class="empty">Melde dich mit Discord an, um private Chats zu nutzen.</div>'}</div><div id="privatePanel" class="card chat-shell"><div class="empty">Wähle links einen Chat aus.</div></div></div>`}
-async function startPrivate(id){if(!me){toast('Bitte zuerst mit Discord anmelden.');return} currentPrivate=members.find(u=>u.id===id);go('private');renderPrivate();await openPrivate();}
-async function openPrivate(){if(!currentPrivate)return;const p=$('#privatePanel');p.innerHTML=`<div class="chat-head"><h2>✉ ${esc(currentPrivate.global_name||currentPrivate.username)}</h2><small class="online-label"><i class="dot ${isOnline(currentPrivate)?'online':''}"></i>${isOnline(currentPrivate)?'Online':'Offline'}</small></div><div id="privateMessages" class="messages"></div><form id="privateForm" class="composer"><input id="privateInput" maxlength="1000" placeholder="Private Nachricht ..."><button class="primary">Senden</button></form>`;$('#privateForm').onsubmit=e=>{e.preventDefault();const i=$('#privateInput');if(i.value.trim()){socket?.emit('private_message',{receiverId:currentPrivate.id,message:i.value});i.value=''}};const d=await api('/api/chat/private/'+currentPrivate.id);$('#privateMessages').innerHTML=d.messages.map(messageHTML).join('');scrollPrivate();}
+function renderPrivate(){const list=members.filter(u=>!me||!sameId(u.id,me.id));$('#page-private').innerHTML=`<div class="private-layout"><div class="card chat-list"><h3 style="padding:10px 12px">Private Chats</h3>${me?list.map(u=>`<div class="chat-person" onclick="startPrivate(${JSON.stringify(String(u.id))})"><img class="avatar" src="${esc(avatar(u))}"><div><b>${esc(u.global_name||u.username)}</b><div class="online-label"><i class="dot ${isOnline(u)?'online':''}"></i>${isOnline(u)?'Online':'Offline'}</div></div></div>`).join('')||'<div class="empty">Noch keine anderen Mitglieder.</div>':'<div class="empty">Melde dich mit Discord an, um private Chats zu nutzen.</div>'}</div><div id="privatePanel" class="card chat-shell"><div class="empty">Wähle links einen Chat aus.</div></div></div>`}
+async function startPrivate(id){id=String(id);if(!me){toast('Bitte zuerst mit Discord anmelden.');return} currentPrivate=members.find(u=>sameId(u.id,id))||friendsData.friends.find(u=>sameId(u.id,id));if(!currentPrivate){toast('Mitglied nicht gefunden.');return;}go('private');renderPrivate();await openPrivate();}
+async function openPrivate(){if(!currentPrivate)return;const p=$('#privatePanel');p.innerHTML=`<div class="chat-head"><h2>✉ ${esc(currentPrivate.global_name||currentPrivate.username)}</h2><small class="online-label"><i class="dot ${isOnline(currentPrivate)?'online':''}"></i>${isOnline(currentPrivate)?'Online':'Offline'}</small></div><div id="privateMessages" class="messages"></div><form id="privateForm" class="composer"><input id="privateInput" maxlength="1000" placeholder="Private Nachricht ..."><button class="primary">Senden</button></form>`;$('#privateForm').onsubmit=async e=>{
+  e.preventDefault();
+  const i=$('#privateInput');const text=i.value.trim();
+  if(!text||!currentPrivate)return;
+  const send=i.parentElement.querySelector('button'); if(send)send.disabled=true;
+  try{
+    await api('/api/chat/private/'+encodeURIComponent(currentPrivate.id),{method:'POST',body:JSON.stringify({message:text})});
+    i.value='';
+  }catch(err){toast('Private Nachricht konnte nicht gesendet werden.');}
+  finally{if(send)send.disabled=false;}
+};const d=await api('/api/chat/private/'+currentPrivate.id);$('#privateMessages').innerHTML=d.messages.map(messageHTML).join('');scrollPrivate();}
 function scrollPrivate(){const e=$('#privateMessages');if(e)e.scrollTop=e.scrollHeight}
 function renderLeaderboard(){
   const sorted=[...members].sort((a,b)=>(b.xp-a.xp)||((b.level||1)-(a.level||1)));
@@ -130,7 +190,7 @@ function renderLeaderboard(){
     const fresh=await api('/api/member/'+encodeURIComponent(memberId));
     if(fresh?.member){u=fresh.member;members=members.map(x=>String(x.id)===memberId?u:x);}
   }catch(e){console.warn('Profil konnte nicht aktualisiert werden:',e);}
-  $('#page-members').innerHTML=`<div class="profile"><div class="card profile-card"><img class="avatar" src="${esc(avatar(u))}"><h2>${esc(u.global_name||u.username)}</h2><div class="role">${esc(displayRole(u))}</div><p>${esc(u.bio||'Noch keine Beschreibung.')}</p>${discordInfo(u)}${levelInfo(u)}<div class="online-label" style="justify-content:center"><i class="dot ${isOnline(u)?'online':''}"></i>${isOnline(u)?'Online':'Offline'}</div><div class="actions" style="justify-content:center"><button class="secondary" onclick="renderMembers()">← Zur Mitgliederliste</button><button class="primary" onclick="startPrivate(${Number(u.id)})">✉ Nachricht</button></div></div><div><div class="section-title"><h2>Account-Informationen</h2></div><div class="info-grid"><div class="card info"><span>Discord-Name</span><strong>${esc(u.username)}</strong></div><div class="card info"><span>Discord-ID</span><strong class="small-value">${esc(u.discord_id||'—')}</strong></div><div class="card info"><span>Discord-Rolle</span><strong>${(u.discord_roles||[]).map(r=>esc(r.name)).join(', ')||'Keine Rolle'}</strong></div><div class="card info"><span>Level</span><strong>${u.level||1}</strong></div><div class="card info"><span>XP</span><strong>${u.xp}</strong></div><div class="card info"><span>Öffentliche Nachrichten</span><strong>${u.message_count||0}</strong></div><div class="card info"><span>Mitglied seit</span><strong>${new Date(u.created_at).toLocaleDateString('de-DE')}</strong></div><div class="card info"><span>Discord-Server</span><strong>${u.discord_in_server?'✓ Mitglied':'✕ Nicht Mitglied'}</strong></div></div></div></div>`;
+  $('#page-members').innerHTML=`<div class="profile"><div class="card profile-card"><img class="avatar" src="${esc(avatar(u))}"><h2>${esc(u.global_name||u.username)}</h2><div class="role">${esc(displayRole(u))}</div><p>${esc(u.bio||'Noch keine Beschreibung.')}</p>${discordInfo(u)}${levelInfo(u)}<div class="online-label" style="justify-content:center"><i class="dot ${isOnline(u)?'online':''}"></i>${isOnline(u)?'Online':'Offline'}</div><div class="actions" style="justify-content:center"><button class="secondary" onclick="renderMembers()">← Zur Mitgliederliste</button><button class="primary" onclick="startPrivate(${String(u.id)})">✉ Nachricht</button></div></div><div><div class="section-title"><h2>Account-Informationen</h2></div><div class="info-grid"><div class="card info"><span>Discord-Name</span><strong>${esc(u.username)}</strong></div><div class="card info"><span>Discord-ID</span><strong class="small-value">${esc(u.discord_id||'—')}</strong></div><div class="card info"><span>Discord-Rolle</span><strong>${(u.discord_roles||[]).map(r=>esc(r.name)).join(', ')||'Keine Rolle'}</strong></div><div class="card info"><span>Level</span><strong>${u.level||1}</strong></div><div class="card info"><span>XP</span><strong>${u.xp}</strong></div><div class="card info"><span>Öffentliche Nachrichten</span><strong>${u.message_count||0}</strong></div><div class="card info"><span>Mitglied seit</span><strong>${new Date(u.created_at).toLocaleDateString('de-DE')}</strong></div><div class="card info"><span>Discord-Server</span><strong>${u.discord_in_server?'✓ Mitglied':'✕ Nicht Mitglied'}</strong></div></div></div></div>`;
 }async function renderSettings(){
   if(!me){
     $('#page-settings').innerHTML='<div class="empty">Bitte melde dich mit Discord an, um Einstellungen zu öffnen.</div>';
@@ -247,7 +307,7 @@ function refreshMembers(){
   return api('/api/members').then(d=>{
     members=d.members;
     if(me){
-      const fresh=members.find(u=>u.id===me.id);
+      const fresh=members.find(u=>sameId(u.id,me.id));
       if(fresh){
         const oldLevel=Number(me.level||1);
         me=fresh;
@@ -255,7 +315,7 @@ function refreshMembers(){
         localStorage.setItem(`zf_level_${me.id}`,String(me.level||1));
       }
       // The current authenticated user is active while this page is open.
-      members=members.map(u=>u.id===me.id?{...u,last_seen:new Date().toISOString()}:u);
+      members=members.map(u=>sameId(u.id,me.id)?{...u,last_seen:new Date().toISOString()}:u);
     }
     renderHome();
     if($('.page.active')?.id==='page-members')renderMembers();
@@ -263,13 +323,13 @@ function refreshMembers(){
   }).catch(()=>{});
 }
 function connectSocket(){if(socket)return;socket=io();socket.on('public_message',m=>{
-  if(me&&m.user_id===me.id){const oldLevel=Number(me.level||1);me={...me,xp:me.xp+Number(m.xp_gain||0),message_count:(me.message_count||0)+1};me.level=levelFromXPClient(me.xp);me.level_start_xp=levelStartXPClient(me.level);me.level_next_xp=levelNextXPClient(me.level);me.level_progress=Math.min(100,Math.max(0,((me.xp-me.level_start_xp)/(me.level_next_xp-me.level_start_xp))*100));members=members.map(u=>u.id===me.id?me:u);localStorage.setItem(`zf_level_${me.id}`,String(me.level||1));if(me.level>oldLevel)showLevelUp(me.level);if($('#page-leaderboard')?.classList.contains('active'))renderLeaderboard();}
+  if(me&&sameId(m.user_id,me.id)){const oldLevel=Number(me.level||1);me={...me,xp:me.xp+Number(m.xp_gain||0),message_count:(me.message_count||0)+1};me.level=levelFromXPClient(me.xp);me.level_start_xp=levelStartXPClient(me.level);me.level_next_xp=levelNextXPClient(me.level);me.level_progress=Math.min(100,Math.max(0,((me.xp-me.level_start_xp)/(me.level_next_xp-me.level_start_xp))*100));members=members.map(u=>sameId(u.id,me.id)?me:u);localStorage.setItem(`zf_level_${me.id}`,String(me.level||1));if(me.level>oldLevel)showLevelUp(me.level);if($('#page-leaderboard')?.classList.contains('active'))renderLeaderboard();}
   const e=$('#publicMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollMsgs()}
   refreshMembers();
 });
 socket.on('public_chat_cleared',()=>{const e=$('#publicMessages');if(e)e.innerHTML='';});
-socket.on('private_message',m=>{if(currentPrivate&&(m.sender_id===currentPrivate.id||m.receiver_id===currentPrivate.id)){const e=$('#privateMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollPrivate()}}});
-socket.on('presence',p=>{members=members.map(u=>u.id===p.userId?{...u,last_seen:p.status==='online'?new Date().toISOString():u.last_seen}:u);renderHome();if($('.page.active')?.id==='page-members')renderMembers()});
+socket.on('private_message',m=>{if(currentPrivate&&(sameId(m.sender_id,currentPrivate.id)||sameId(m.receiver_id,currentPrivate.id))){const e=$('#privateMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollPrivate()}}});
+socket.on('presence',p=>{members=members.map(u=>sameId(u.id,p.userId)?{...u,last_seen:p.status==='online'?new Date().toISOString():u.last_seen}:u);renderHome();if($('.page.active')?.id==='page-members')renderMembers()});
 setInterval(refreshMembers,30000);
 }async function go(page,update=true){
   if(protectedPages.has(page)&&!me){showLoginGate();return}

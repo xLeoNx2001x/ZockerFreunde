@@ -268,6 +268,32 @@ app.get('/api/chat/private/:id', requireUser, async (req, res) => {
   res.json({ messages: rows });
 });
 
+app.post('/api/chat/private/:id', requireUser, async (req, res) => {
+  const receiverId = String(req.params.id);
+  const message = clean(req.body?.message).slice(0, 1000);
+  if (!/^\d+$/.test(receiverId) || receiverId === String(req.user.id)) {
+    return res.status(400).json({error:'Ungültiger Empfänger'});
+  }
+  if (!message) return res.status(400).json({error:'Nachricht darf nicht leer sein.'});
+  const target = await db.get('SELECT id FROM users WHERE id=$1',[receiverId]);
+  if (!target) return res.status(404).json({error:'Mitglied nicht gefunden'});
+  const info = await db.get(
+    'INSERT INTO private_messages(sender_id,receiver_id,message) VALUES($1,$2,$3) RETURNING id',
+    [req.user.id, receiverId, message]
+  );
+  const row = await db.get(
+    `SELECT m.*,u.username,u.global_name,u.avatar,u.role
+     FROM private_messages m JOIN users u ON u.id=m.sender_id WHERE m.id=$1`,
+    [info.id]
+  );
+  io.sockets.sockets.forEach(s => {
+    if (s?.user && (Number(s.user.id) === Number(receiverId) || String(s.user.id) === String(req.user.id))) {
+      s.emit('private_message', row);
+    }
+  });
+  res.json({ok:true,message:row});
+});
+
 async function friendPublicUser(id) {
   const u = await db.get('SELECT * FROM users WHERE id=$1', [id]);
   return u ? await publicUser(u) : null;
@@ -297,8 +323,8 @@ app.get('/api/friends', requireUser, async (req, res) => {
 });
 
 app.post('/api/friends/request/:id', requireUser, async (req,res) => {
-  const targetId=Number(req.params.id), meId=req.user.id;
-  if(!Number.isInteger(targetId) || targetId===meId) return res.status(400).json({error:'Ungültiger Freund'});
+  const targetId=String(req.params.id), meId=String(req.user.id);
+  if(!/^\d+$/.test(targetId) || targetId===meId) return res.status(400).json({error:'Ungültiger Freund'});
   if(!await db.get('SELECT id FROM users WHERE id=$1',[targetId])) return res.status(404).json({error:'Mitglied nicht gefunden'});
   if(await isBlockedEitherWay(meId,targetId)) return res.status(403).json({error:'Freundschaftsanfrage nicht möglich.'});
   const rel=await relationshipBetween(meId,targetId);
@@ -310,7 +336,7 @@ app.post('/api/friends/request/:id', requireUser, async (req,res) => {
 });
 
 app.post('/api/friends/:id/accept', requireUser, async (req,res) => {
-  const friendshipId=Number(req.params.id);
+  const friendshipId=String(req.params.id);
   const f=await db.get('SELECT * FROM friendships WHERE id=$1 AND addressee_id=$2 AND status=\'pending\'',[friendshipId,req.user.id]);
   if(!f) return res.status(404).json({error:'Anfrage nicht gefunden'});
   if(await isBlockedEitherWay(req.user.id,f.requester_id)) return res.status(403).json({error:'Diese Freundschaft ist blockiert.'});
@@ -319,21 +345,21 @@ app.post('/api/friends/:id/accept', requireUser, async (req,res) => {
 });
 
 app.post('/api/friends/accept-by-user/:id', requireUser, async (req,res) => {
-  const targetId=Number(req.params.id);
+  const targetId=String(req.params.id);
   const f=await db.get(`SELECT * FROM friendships WHERE requester_id=$1 AND addressee_id=$2 AND status='pending'`,[targetId,req.user.id]);
   if(!f) return res.status(404).json({error:'Anfrage nicht gefunden'});
   await db.run('UPDATE friendships SET status=\'accepted\',updated_at=CURRENT_TIMESTAMP WHERE id=$1',[f.id]);
   res.json({ok:true});
 });
 app.post('/api/friends/decline-by-user/:id', requireUser, async (req,res) => {
-  const targetId=Number(req.params.id);
+  const targetId=String(req.params.id);
   const f=await db.get(`SELECT * FROM friendships WHERE requester_id=$1 AND addressee_id=$2 AND status='pending'`,[targetId,req.user.id]);
   if(!f) return res.status(404).json({error:'Anfrage nicht gefunden'});
   await db.run('UPDATE friendships SET status=\'declined\',updated_at=CURRENT_TIMESTAMP WHERE id=$1',[f.id]);
   res.json({ok:true});
 });
 app.delete('/api/friends/cancel-by-user/:id', requireUser, async (req,res) => {
-  const targetId=Number(req.params.id);
+  const targetId=String(req.params.id);
   const f=await db.get(`SELECT id FROM friendships WHERE requester_id=$1 AND addressee_id=$2 AND status='pending'`,[req.user.id,targetId]);
   if(!f) return res.status(404).json({error:'Gesendete Anfrage nicht gefunden'});
   await db.run('DELETE FROM friendships WHERE id=$1',[f.id]);
@@ -341,7 +367,7 @@ app.delete('/api/friends/cancel-by-user/:id', requireUser, async (req,res) => {
 });
 
 app.delete('/api/friends/:id/request', requireUser, async (req,res) => {
-  const friendshipId=Number(req.params.id);
+  const friendshipId=String(req.params.id);
   const f=await db.get('SELECT * FROM friendships WHERE id=$1 AND requester_id=$2 AND status=\'pending\'',[friendshipId,req.user.id]);
   if(!f) return res.status(404).json({error:'Gesendete Anfrage nicht gefunden'});
   await db.run('DELETE FROM friendships WHERE id=$1',[friendshipId]);
@@ -349,7 +375,7 @@ app.delete('/api/friends/:id/request', requireUser, async (req,res) => {
 });
 
 app.post('/api/friends/:id/decline', requireUser, async (req,res) => {
-  const friendshipId=Number(req.params.id);
+  const friendshipId=String(req.params.id);
   const f=await db.get('SELECT * FROM friendships WHERE id=$1 AND addressee_id=$2 AND status=\'pending\'',[friendshipId,req.user.id]);
   if(!f) return res.status(404).json({error:'Anfrage nicht gefunden'});
   await db.run('UPDATE friendships SET status=\'declined\',updated_at=CURRENT_TIMESTAMP WHERE id=$1',[friendshipId]);
@@ -357,7 +383,7 @@ app.post('/api/friends/:id/decline', requireUser, async (req,res) => {
 });
 
 app.delete('/api/friends/:id', requireUser, async (req,res) => {
-  const targetId=Number(req.params.id);
+  const targetId=String(req.params.id);
   const f=await db.get(`SELECT id FROM friendships WHERE status='accepted' AND ((requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1))`,[req.user.id,targetId]);
   if(!f) return res.status(404).json({error:'Freundschaft nicht gefunden'});
   await db.run('DELETE FROM friendships WHERE id=$1',[f.id]);
@@ -365,25 +391,25 @@ app.delete('/api/friends/:id', requireUser, async (req,res) => {
 });
 
 app.post('/api/friends/:id/favorite', requireUser, async (req,res) => {
-  const targetId=Number(req.params.id);
+  const targetId=String(req.params.id);
   const f=await db.get(`SELECT * FROM friendships WHERE status='accepted' AND ((requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1))`,[req.user.id,targetId]);
   if(!f) return res.status(404).json({error:'Freundschaft nicht gefunden'});
-  const column=Number(f.requester_id)===Number(req.user.id)?'requester_favorite':'addressee_favorite';
+  const column=String(f.requester_id)===String(req.user.id)?'requester_favorite':'addressee_favorite';
   const value=req.body.favorite!==false;
   await db.run(`UPDATE friendships SET ${column}=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2`,[value,f.id]);
   res.json({ok:true,favorite:value});
 });
 
 app.post('/api/friends/:id/block', requireUser, async (req,res) => {
-  const targetId=Number(req.params.id);
-  if(!Number.isInteger(targetId)||targetId===req.user.id) return res.status(400).json({error:'Ungültiger Benutzer'});
+  const targetId=String(req.params.id);
+  if(!/^\d+$/.test(targetId)||targetId===String(req.user.id)) return res.status(400).json({error:'Ungültiger Benutzer'});
   await db.run('INSERT INTO blocks(blocker_id,blocked_id) VALUES($1,$2) ON CONFLICT(blocker_id,blocked_id) DO NOTHING',[req.user.id,targetId]);
   await db.run(`DELETE FROM friendships WHERE (requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1)`,[req.user.id,targetId]);
   res.json({ok:true});
 });
 
 app.delete('/api/friends/:id/block', requireUser, async (req,res) => {
-  const targetId=Number(req.params.id);
+  const targetId=String(req.params.id);
   await db.run('DELETE FROM blocks WHERE blocker_id=$1 AND blocked_id=$2',[req.user.id,targetId]);
   res.json({ok:true});
 });
@@ -569,11 +595,11 @@ io.on('connection', socket => {
     try {
       if (!socket.user) return;
       const receiverId = Number(data?.receiverId); const message = clean(data?.message).slice(0, 1000);
-      if (!receiverId || !message || receiverId === socket.user.id) return;
+      if (!receiverId || !message || receiverId === Number(socket.user.id)) return;
       const target = await db.get('SELECT id FROM users WHERE id=$1', [receiverId]); if (!target) return;
       const info = await db.get('INSERT INTO private_messages(sender_id,receiver_id,message) VALUES($1,$2,$3) RETURNING id', [socket.user.id, receiverId, message]);
       const row = await db.get(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM private_messages m JOIN users u ON u.id=m.sender_id WHERE m.id=$1`, [info.id]);
-      for (const [, s] of io.sockets.sockets) if (s?.user?.id === receiverId || s?.user?.id === socket.user.id) s.emit('private_message', row);
+      for (const [, s] of io.sockets.sockets) if (s?.user && (String(s.user.id) === receiverId || Number(s.user.id) === Number(socket.user.id))) s.emit('private_message', row);
     } catch (e) { console.error('private_message:', e.message); }
   });
   socket.on('disconnect', () => {
