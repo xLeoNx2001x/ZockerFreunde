@@ -1,65 +1,23 @@
-# Zockerfreunde 3.4.1 – Supabase / PostgreSQL
+# ZockerFreunde 4.1.0
 
-Die Website verwendet **PostgreSQL über Supabase** statt einer lokalen SQLite-Datei. Dadurch bleiben Accounts, XP, Level, Rangliste, Chats, Profile und Einstellungen auch nach Render-Restarts und neuen Deploys erhalten – ohne Render Persistent Disk.
+## Schwerpunkt
+4.1.0 verfeinert die privaten Server und die Kommunikation auf Basis des stabilen 4.0.1-Standes.
 
-## Render Environment Variables
+### Neu
+- Größere Server-Oberfläche mit Server-Icon und Beschreibung
+- Server-Erstellung über eine eigene GUI
+- Einklappbare Server-Abschnitte
+- Server-Beschreibung und Icon in der Verwaltung
+- Globale Suche nach Mitgliedern und eigenen Server-Nachrichten
+- Benachrichtigungscenter mit ungelesenem Zähler
+- Live-Benachrichtigungen für Freundschaftsanfragen und private Nachrichten
+- Reaktionen auf Server-Nachrichten
+- Eigene Server-Nachrichten bearbeiten
+- Server-Nachrichten anpinnen und lösen
+- Push-to-Talk im Sprachkanal (V)
+- Bestehende Datei-, Bild- und Video-Uploads bleiben erhalten
+- Bestehende Polls, Rollen/Rechte, Kategorien und Voice-Steuerung bleiben erhalten
+- Private Chats zeigen weiterhin nur aktuelle Freunde; ehemalige Freunde stehen unter „Alte Freunde“
 
-Setze in deinem Render Web Service:
-
-- `DATABASE_URL` = PostgreSQL Connection String aus Supabase
-- `DATABASE_SSL` = `true`
-- `DB_POOL_MAX` = `5`
-- `DISCORD_CLIENT_ID`
-- `DISCORD_CLIENT_SECRET`
-- `DISCORD_REDIRECT_URI`
-- `DISCORD_GUILD_ID`
-- `DISCORD_BOT_TOKEN`
-- `DISCORD_INVITE_URL`
-- `SESSION_SECRET` (Render kann automatisch einen Wert erzeugen)
-
-Die Datenbanktabellen werden beim Start automatisch mit `CREATE TABLE IF NOT EXISTS` angelegt. Es ist kein manuelles SQL-Skript für die erste Einrichtung nötig.
-
-## Supabase
-
-In Supabase findest du den Connection String unter den Datenbank-/Connect-Einstellungen. Für einen normalen dauerhaften Render-Webservice kannst du den dort bereitgestellten PostgreSQL-Connection-String verwenden.
-
-## Lokal testen
-
-```bash
-npm install
-npm start
-```
-
-Dafür müssen die Environment Variables gesetzt sein. Der Healthcheck ist unter `/health` erreichbar und meldet `database: connected`, wenn PostgreSQL erreichbar ist.
-
-## Render
-
-`render.yaml` enthält bereits die benötigten Environment-Variablen und startet den Server mit `npm start`.
-
-
-## Admin-Funktionen (3.4)
-Setze auf Render die Environment Variable `DISCORD_ADMIN_IDS` auf eine oder mehrere Discord-User-IDs, kommasepariert.
-Beispiel: `123456789012345678,987654321098765432`
-
-Admins sehen unter **Einstellungen → Server & Level bearbeiten** die Mitgliederverwaltung. Dort können Level gesetzt und Discord-Rollen über den Bot vergeben werden. Dafür benötigt der Discord-Bot die passenden Server-/Rollenrechte.
-
-
-## 3.4.2 Feinschliff
-- Aktive Mitglieder werden über `last_seen` und Socket-Verbindungen aktualisiert.
-- Öffentlicher Chat kann von konfigurierten Admins geleert werden.
-- Discord-Beitreten verwendet `DISCORD_INVITE_URL`.
-- Chat-XP startet bei 5 XP und verdoppelt sich pro erreichtem Level: 5, 10, 20, 40, ...
-
-- Online-Erkennung akzeptiert jetzt PostgreSQL-/ISO-Zeitstempel korrekt.
-- Der eigene eingeloggte Account wird auf der Startseite sofort als aktiv behandelt.
-- Level-Up-Animation bei echtem Levelsprung ergänzt.
-- Discord-Beitreten zeigt bei fehlender `DISCORD_INVITE_URL` jetzt einen verständlichen Hinweis statt eines leeren Links.
-
-
-## Version 4.0.1 – Private Server Erweiterung
-- Private Chats zeigen nur Freunde; ehemalige Freunde erscheinen unter „Alte Freunde“.
-- Private Server mit Serververwaltung, Abschnitten/Kategorien, Text- und Sprachkanälen.
-- Eigene Rollen mit granularen Serverrechten und Rollenvergabe an Mitglieder.
-- Voice mit Mute, Kamera, Bildschirmfreigabe, Audioausgang und individueller Lautstärke pro Teilnehmer.
-- Dateien, Bilder und Videos im Serverchat; einzelne Nachrichten löschbar; anpassbare Abstimmungen.
-- Server können von Mitgliedern verlassen und vom Besitzer gelöscht werden.
+## Wichtiger Hinweis
+WebRTC-Voice nutzt Browser-P2P mit STUN. Für schwierige NAT-/Firewall-Konstellationen kann ein TURN-Server erforderlich sein.
