@@ -55,32 +55,14 @@ function checkStoredLevel(u){
   localStorage.setItem(key,String(current));
 }
 function friendRelation(id){if(friendsData.friends.some(u=>sameId(u.id,id)))return 'friend';if(friendsData.sent.some(u=>sameId(u.id,id)))return 'sent';if(friendsData.incoming.some(u=>sameId(u.id,id)))return 'incoming';if(friendsData.blocked.some(u=>sameId(u.id,id)))return 'blocked';return 'none';}
-function friendButton(u){
-  if(!me||sameId(u.id,me.id))return '';
-  const id=String(u.id),r=friendRelation(id);
-  if(r==='none') return `<button type="button" id="friend-add-${esc(id)}" class="friend-add-btn" title="Freundschaftsanfrage senden" data-add-friend="${esc(id)}">👤<b>＋</b></button>`;
-  if(r==='friend') return `<button type="button" class="friend-add-btn friend-ok" title="Bereits befreundet" data-open-friend="${esc(id)}">✓</button>`;
-  if(r==='incoming') return `<button type="button" class="friend-add-btn" title="Freundschaftsanfrage beantworten" data-go-friends="1">📩</button>`;
-  if(r==='sent') return `<button type="button" class="friend-add-btn friend-request-sent" title="Anfrage gesendet" disabled>✓</button>`;
-  return `<button type="button" class="friend-add-btn friend-blocked" title="Blockiert" data-go-friends="1">⊘</button>`;
-}
-function bindFriendRequestButtons(){
-  $$('[data-add-friend]').forEach(btn=>{
-    if(btn.dataset.bound)return;
-    btn.dataset.bound='1';
-    btn.addEventListener('click',e=>{
-      e.preventDefault(); e.stopPropagation();
-      sendFriendRequest(btn.dataset.addFriend,btn);
-    });
-  });
-  $$('[data-open-friend]').forEach(btn=>{
-    if(btn.dataset.bound)return; btn.dataset.bound='1';
-    btn.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();openFriendMenu(btn.dataset.openFriend);});
-  });
-  $$('[data-go-friends]').forEach(btn=>{
-    if(btn.dataset.bound)return; btn.dataset.bound='1';
-    btn.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();go('friends');});
-  });
+function friendButton(u){if(!me||sameId(u.id,me.id))return '';const id=String(u.id),r=friendRelation(id);if(r==='none')return `<button type="button" id="friend-add-${esc(id)}" class="friend-add-btn" title="Freundschaftsanfrage senden" data-add-friend="${esc(id)}">👤<b>＋</b></button>`;if(r==='friend')return `<button type="button" class="friend-add-btn friend-ok" title="Bereits befreundet" onclick='openFriendMenu(${JSON.stringify(String(id))});event.stopPropagation()'>✓</button>`;if(r==='incoming')return `<button type="button" class="friend-add-btn" title="Freundschaftsanfrage beantworten" onclick="go('friends');event.stopPropagation()">📩</button>`;if(r==='sent')return `<button type="button" class="friend-add-btn friend-request-sent" title="Anfrage gesendet" disabled>✓</button>`;return `<button type="button" class="friend-add-btn friend-blocked" title="Blockiert" onclick="go('friends');event.stopPropagation()">⊘</button>`;}
+function memberCard(u){return `<div class="card member-card"><div class="member-head member-head-friend"><img class="avatar" src="${esc(avatar(u))}"><div><div class="member-name">${esc(u.global_name||u.username)}</div><div class="role">${esc(displayRole(u))}</div></div>${friendButton(u)}</div><p>${esc(u.bio||'Noch keine Beschreibung.')}</p>${discordInfo(u)}${levelInfo(u)}<div class="online-label"><i class="dot ${isOnline(u)?'online':''}"></i>${isOnline(u)?'Online':'Offline'} · ${u.message_count||0} Nachrichten</div><div class="actions"><button class="secondary" onclick="showProfile('${u.id}')">Profil ansehen</button><button type="button" class="secondary member-message-btn" data-message-user="${esc(String(u.id))}">✉ Nachricht</button></div></div>`}
+async function load(){
+  const d=await api('/api/me');me=d.user;
+  const m=await api('/api/members');members=m.members;
+  if(me){try{friendsData=await api('/api/friends')}catch{friendsData={friends:[],sent:[],incoming:[],blocked:[]};}}
+  if(me){checkStoredLevel(me);members=members.map(u=>sameId(u.id,me.id)?{...u,last_seen:new Date().toISOString()}:u);me=members.find(u=>sameId(u.id,me.id))||me;}
+  renderTop();renderHome();connectSocket();
 }
 function renderTop(){ $('#topUser').innerHTML=me?`<div class="user-mini"><i class="dot online"></i><img class="avatar" src="${esc(avatar(me))}"><b>${esc(me.global_name||me.username)}</b></div>`:`<a class="primary" href="/auth/discord">Mit Discord anmelden</a>`; }
 function renderHome(){const online=members.filter(isOnline).length;$('#page-home').innerHTML=`<div class="hero"><div class="eyebrow">DEINE GAMING COMMUNITY</div><h1>Gemeinsam spielen.<br><span class="gradient">Gemeinsam zocken.</span></h1><p>Zockerfreunde verbindet Gaming, Freunde und Community an einem Ort. Chatte, finde deine Freunde und sammle XP für die Community-Rangliste.</p><div class="actions">${me?`<button class="primary" onclick="go('chat')">Zum Community-Chat →</button>`:`<a class="primary" href="/auth/discord">Mit Discord starten →</a>`}<button class="secondary" onclick="go('leaderboard')">🏆 Rangliste ansehen</button></div></div><div class="stats"><div class="stat"><strong>${members.length}</strong><span>Mitglieder</span></div><div class="stat"><strong>${online}</strong><span>Gerade online</span></div><div class="stat"><strong>${members.reduce((a,b)=>a+b.points,0)}</strong><span>Community-Punkte</span></div><div class="stat"><strong>∞</strong><span>Gemeinsame Momente</span></div></div><div class="section-title"><h2>Aktive Mitglieder</h2><button class="secondary" onclick="go('members')">Alle ansehen</button></div><div class="grid">${members.filter(isOnline).slice(0,4).map(memberCard).join('')||'<div class="empty">Noch niemand online.</div>'}</div>`}
@@ -121,10 +103,9 @@ function renderFriends(){
 }
 async function sendFriendRequest(id,button){
   id=String(id);
-  if(!id || id===String(me?.id))return toast('Du kannst dir selbst keine Anfrage senden.');
   if(button?.disabled)return;
   try{
-    if(button){button.disabled=true;button.classList.add('friend-request-sent');button.innerHTML='✓';button.title='Anfrage gesendet';}
+    if(button){button.disabled=true;button.classList.add('friend-request-sent');button.title='Anfrage wird gesendet …';}
     await api('/api/friends/request/'+encodeURIComponent(id),{method:'POST'});
     await loadFriends();
     renderMembers();
@@ -132,9 +113,9 @@ async function sendFriendRequest(id,button){
     if($('#page-friends')?.classList.contains('active'))renderFriends();
     toast('Freundschaftsanfrage gesendet!');
   }catch(e){
-    if(button){button.disabled=false;button.classList.remove('friend-request-sent');button.innerHTML='👤<b>＋</b>';button.title='Freundschaftsanfrage senden';}
-    let msg=e?.message||'Anfrage konnte nicht gesendet werden.';
-    try{const d=JSON.parse(String(msg));if(d.error)msg=d.error;}catch{}
+    if(button){button.disabled=false;button.classList.remove('friend-request-sent');button.title='Freundschaftsanfrage senden';}
+    let msg='Anfrage konnte nicht gesendet werden.';
+    try{const d=JSON.parse(String(e.message||''));if(d.error)msg=d.error;}catch{}
     toast(msg);
   }
 }
@@ -421,6 +402,13 @@ document.addEventListener('click',e=>{
   e.preventDefault();
   e.stopPropagation();
   startPrivate(btn.dataset.messageUser);
+});
+document.addEventListener('click',e=>{
+  const btn=e.target.closest('[data-add-friend]');
+  if(!btn)return;
+  e.preventDefault();
+  e.stopPropagation();
+  sendFriendRequest(btn.dataset.addFriend,btn);
 });
 $$('.nav').forEach(n=>n.onclick=()=>go(n.dataset.page));$('#mobileMenu').onclick=()=>$('.sidebar').classList.toggle('open');
 fetch('/api/me').then(r=>r.json()).then(async d=>{me=d.user;if(!me){renderTop();renderHome();setPageTheme('home');return}const m=await api('/api/members');members=m.members;try{friendsData=await api('/api/friends')}catch{}renderTop();renderHome();renderMembers();renderChat();renderPrivate();renderLeaderboard();renderSettings();connectSocket();setPageTheme('home');}).catch(console.error);
