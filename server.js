@@ -840,6 +840,16 @@ app.patch('/api/servers/:serverId/roles/:roleId', requireUser, requireServerMemb
   const role=await db.get('UPDATE community_roles SET name=$1,color=$2,permissions=$3::jsonb WHERE id=$4 AND server_id=$5 RETURNING id,name,color,permissions,position',[name,color,JSON.stringify(permissions),id,req.communityServer.id]); res.json({ok:true,role});
 });
 app.delete('/api/servers/:serverId/roles/:roleId', requireUser, requireServerMember, async (req,res)=>{ if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_roles')))return res.status(403).json({error:'Keine Berechtigung.'}); const id=Number(req.params.roleId); await db.run('UPDATE community_server_members SET role_id=NULL WHERE server_id=$1 AND role_id=$2',[req.communityServer.id,id]); await db.run('DELETE FROM community_roles WHERE id=$1 AND server_id=$2',[id,req.communityServer.id]); await ensureCommunityDefaults(req.communityServer.id); res.json({ok:true}); });
+app.post('/api/servers/:serverId/roles/reorder', requireUser, requireServerMember, async (req,res)=>{
+  try{if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_roles')))return res.status(403).json({error:'Keine Berechtigung.'});
+  const ids=Array.isArray(req.body?.roleIds)?req.body.roleIds.map(Number).filter(Number.isFinite):[];
+  const roles=await db.all('SELECT id FROM community_roles WHERE server_id=$1 ORDER BY position DESC,id ASC',[req.communityServer.id]);
+  const valid=new Set(roles.map(r=>Number(r.id)));
+  const ordered=[...ids.filter(id=>valid.has(id)),...roles.map(r=>Number(r.id)).filter(id=>!ids.includes(id))];
+  for(let i=0;i<ordered.length;i++) await db.run('UPDATE community_roles SET position=$1 WHERE id=$2 AND server_id=$3',[ordered.length-i,ordered[i],req.communityServer.id]);
+  res.json({ok:true});
+  }catch(e){console.error('role reorder',e);res.status(500).json({error:'Rollenreihenfolge konnte nicht gespeichert werden.'})}
+});
 app.post('/api/servers/:serverId/members/:memberId/role', requireUser, requireServerMember, async (req,res)=>{ if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_members')))return res.status(403).json({error:'Keine Berechtigung.'}); const memberId=Number(req.params.memberId),roleId=Number(req.body?.roleId)||null; const member=await db.get('SELECT user_id FROM community_server_members WHERE server_id=$1 AND user_id=$2',[req.communityServer.id,memberId]); if(!member)return res.status(404).json({error:'Mitglied nicht gefunden.'}); if(roleId){const role=await db.get('SELECT id FROM community_roles WHERE id=$1 AND server_id=$2',[roleId,req.communityServer.id]);if(!role)return res.status(404).json({error:'Rolle nicht gefunden.'});} await db.run('UPDATE community_server_members SET role_id=$1 WHERE server_id=$2 AND user_id=$3',[roleId,req.communityServer.id,memberId]); res.json({ok:true}); });
 
 app.get('/api/servers/:serverId/channels/:channelId/messages', requireUser, requireServerMember, async (req,res) => {
