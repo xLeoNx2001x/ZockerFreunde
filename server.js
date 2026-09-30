@@ -330,7 +330,8 @@ app.post('/api/friends/request/:id', requireUser, async (req,res) => {
   const rel=await relationshipBetween(meId,targetId);
   if(rel && rel.status==='accepted') return res.status(409).json({error:'Ihr seid bereits Freunde.'});
   if(rel && rel.status==='pending') return res.status(409).json({error:rel.requester_id===meId?'Anfrage bereits gesendet.':'Diese Person hat dir bereits eine Anfrage gesendet.'});
-  if(rel) await db.run('DELETE FROM friendships WHERE id=$1',[rel.id]);
+  // Alte abgelehnte/sonstige Beziehungen vollständig bereinigen, damit eine neue Anfrage wieder möglich ist.
+  await db.run(`DELETE FROM friendships WHERE (requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1)`,[meId,targetId]);
   await db.run('INSERT INTO friendships(requester_id,addressee_id,status) VALUES($1,$2,\'pending\')',[meId,targetId]);
   res.json({ok:true});
 });
