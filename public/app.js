@@ -97,7 +97,7 @@ function renderFriends(){
     if(tab==='friends') panel.innerHTML=friends.length?friends.map(u=>friendPerson(u,`<div class="friend-actions"><span class="favorite-mark">${u.favorite?'★':''}</span><button class="secondary small-btn" onclick='openFriendMenu(${JSON.stringify(String(u.id))})'>Öffnen</button></div>`)).join(''):'<div class="empty">Noch keine Freunde. Geh zu den Mitgliedern und sende eine Anfrage. 👤＋</div>';
     if(tab==='incoming') panel.innerHTML=incoming.length?incoming.map(u=>friendPerson(u,`<div class="friend-actions"><button class="primary small-btn" onclick="acceptFriend(${u.id})">Annehmen</button><button class="secondary small-btn" onclick="declineFriend(${u.id})">Ablehnen</button></div>`)).join(''):'<div class="empty">Keine offenen Freundschaftsanfragen.</div>';
     if(tab==='sent') panel.innerHTML=sent.length?sent.map(u=>friendPerson(u,`<div class="friend-actions"><span class="pending-label">Gesendet</span><button class="secondary small-btn" onclick="cancelFriend(${u.id})">Zurückziehen</button></div>`)).join(''):'<div class="empty">Keine verschickten Anfragen.</div>';
-    if(tab==='blocked') panel.innerHTML=blocked.length?blocked.map(u=>friendPerson(u,`<div class="friend-actions"><button class="secondary small-btn" onclick="unblockFriend(${JSON.stringify(String(u.id))})">Entsperren</button></div>`)).join(''):'<div class="empty">Du hast niemanden blockiert.</div>';
+    if(tab==='blocked') panel.innerHTML=blocked.length?blocked.map(u=>friendPerson(u,`<div class="friend-actions"><button type="button" class="secondary small-btn unblock-friend-btn" data-unblock-friend="${esc(String(u.id))}">Entsperren</button></div>`)).join(''):'<div class="empty">Du hast niemanden blockiert.</div>';
   }
   $$('.friend-tab').forEach(b=>b.onclick=()=>draw(b.dataset.ft)); draw('friends');
 }
@@ -148,16 +148,20 @@ async function toggleFavorite(id,current){
     toast(result.favorite?'Als Favorit markiert.':'Favorit entfernt.');
   }catch(e){toast('Favorit konnte nicht geändert werden.');}
 }
-async function unblockFriend(id){
+async function unblockFriend(id,button){
   id=String(id);
+  if(button?.disabled)return;
+  const target=friendsData.blocked.find(u=>sameId(u.id,id));
   try{
-    const target=friendsData.blocked.find(u=>sameId(u.id,id));
-    await api('/api/friends/'+encodeURIComponent(id)+'/block',{method:'DELETE'});
-    await loadFriends();
+    if(button){button.disabled=true;button.textContent='Wird entsperrt …';}
+    const result=await api('/api/friends/'+encodeURIComponent(id)+'/block',{method:'DELETE'});
+    if(!result?.ok)throw new Error(JSON.stringify({error:'Entsperren wurde nicht bestätigt.'}));
+    friendsData.blocked=friendsData.blocked.filter(u=>!sameId(u.id,id));
     renderMembers();
     renderFriends();
     toast(`${target?(target.global_name||target.username):'Mitglied'} wurde entsperrt.`);
   }catch(e){
+    if(button){button.disabled=false;button.textContent='Entsperren';}
     let msg='Entsperren fehlgeschlagen.';
     try{const d=JSON.parse(String(e.message||''));if(d.error)msg=d.error;}catch{}
     toast(msg);
@@ -424,6 +428,13 @@ document.addEventListener('click',e=>{
   e.preventDefault();
   e.stopPropagation();
   sendFriendRequest(btn.dataset.addFriend,btn);
+});
+document.addEventListener('click',e=>{
+  const btn=e.target.closest('[data-unblock-friend]');
+  if(!btn)return;
+  e.preventDefault();
+  e.stopPropagation();
+  unblockFriend(btn.dataset.unblockFriend,btn);
 });
 $$('.nav').forEach(n=>n.onclick=()=>go(n.dataset.page));$('#mobileMenu').onclick=()=>$('.sidebar').classList.toggle('open');
 fetch('/api/me').then(r=>r.json()).then(async d=>{me=d.user;if(!me){renderTop();renderHome();setPageTheme('home');return}const m=await api('/api/members');members=m.members;try{friendsData=await api('/api/friends')}catch{}renderTop();renderHome();renderMembers();renderChat();renderPrivate();renderLeaderboard();renderSettings();connectSocket();setPageTheme('home');}).catch(console.error);

@@ -410,9 +410,15 @@ app.post('/api/friends/:id/block', requireUser, async (req,res) => {
 });
 
 app.delete('/api/friends/:id/block', requireUser, async (req,res) => {
-  const targetId=String(req.params.id);
-  await db.run('DELETE FROM blocks WHERE blocker_id=$1 AND blocked_id=$2',[req.user.id,targetId]);
-  res.json({ok:true});
+  const targetId=Number(req.params.id);
+  if(!Number.isInteger(targetId) || targetId <= 0 || targetId === Number(req.user.id)) {
+    return res.status(400).json({error:'Ungültiger Benutzer'});
+  }
+  const result=await db.run('DELETE FROM blocks WHERE blocker_id=$1 AND blocked_id=$2',[Number(req.user.id),targetId]);
+  if(result.rowCount === 0) {
+    return res.status(404).json({error:'Diese Person ist nicht (mehr) blockiert.'});
+  }
+  res.json({ok:true,removed:true});
 });
 
 function adminIds() {
