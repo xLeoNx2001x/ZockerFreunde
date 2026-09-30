@@ -54,3 +54,12 @@ Admins sehen unter **Einstellungen → Server & Level bearbeiten** die Mitgliede
 - Der eigene eingeloggte Account wird auf der Startseite sofort als aktiv behandelt.
 - Level-Up-Animation bei echtem Levelsprung ergänzt.
 - Discord-Beitreten zeigt bei fehlender `DISCORD_INVITE_URL` jetzt einen verständlichen Hinweis statt eines leeren Links.
+
+
+## Version 4.0.1 – Private Server Erweiterung
+- Private Chats zeigen nur Freunde; ehemalige Freunde erscheinen unter „Alte Freunde“.
+- Private Server mit Serververwaltung, Abschnitten/Kategorien, Text- und Sprachkanälen.
+- Eigene Rollen mit granularen Serverrechten und Rollenvergabe an Mitglieder.
+- Voice mit Mute, Kamera, Bildschirmfreigabe, Audioausgang und individueller Lautstärke pro Teilnehmer.
+- Dateien, Bilder und Videos im Serverchat; einzelne Nachrichten löschbar; anpassbare Abstimmungen.
+- Server können von Mitgliedern verlassen und vom Besitzer gelöscht werden.

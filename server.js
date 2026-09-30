@@ -3,6 +3,7 @@ const express = require('express');
 const http = require('http');
 const path = require('path');
 const crypto = require('crypto');
+const fs = require('fs');
 const cookieParser = require('cookie-parser');
 const { Pool } = require('pg');
 const { Server } = require('socket.io');
@@ -144,10 +145,60 @@ async function initDatabase() {
       expires_at TIMESTAMPTZ,
       created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    CREATE TABLE IF NOT EXISTS friend_history (
+      id SERIAL PRIMARY KEY,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      other_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      removed_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(user_id, other_user_id),
+      CHECK(user_id <> other_user_id)
+    );
+    CREATE TABLE IF NOT EXISTS community_sections (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL REFERENCES community_servers(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      position INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(server_id,name)
+    );
+    CREATE TABLE IF NOT EXISTS community_roles (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL REFERENCES community_servers(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      color TEXT NOT NULL DEFAULT '#8b93ad',
+      permissions JSONB NOT NULL DEFAULT '{}'::jsonb,
+      position INTEGER NOT NULL DEFAULT 0,
+      UNIQUE(server_id,name)
+    );
+    CREATE TABLE IF NOT EXISTS community_attachments (
+      id BIGSERIAL PRIMARY KEY,
+      message_id INTEGER NOT NULL REFERENCES community_messages(id) ON DELETE CASCADE,
+      filename TEXT NOT NULL,
+      mime TEXT NOT NULL,
+      size INTEGER NOT NULL DEFAULT 0,
+      data BYTEA NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS community_poll_votes (
+      id BIGSERIAL PRIMARY KEY,
+      message_id INTEGER NOT NULL REFERENCES community_messages(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      option_index INTEGER NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(message_id,user_id,option_index)
+    );
+    ALTER TABLE community_channels ADD COLUMN IF NOT EXISTS section_id INTEGER REFERENCES community_sections(id) ON DELETE SET NULL;
+    ALTER TABLE community_server_members ADD COLUMN IF NOT EXISTS role_id INTEGER REFERENCES community_roles(id) ON DELETE SET NULL;
+    ALTER TABLE community_messages ADD COLUMN IF NOT EXISTS message_type TEXT NOT NULL DEFAULT 'text';
+    ALTER TABLE community_messages ADD COLUMN IF NOT EXISTS poll_data JSONB;
     CREATE INDEX IF NOT EXISTS idx_community_server_members_user ON community_server_members (user_id, server_id);
     CREATE INDEX IF NOT EXISTS idx_community_channels_server ON community_channels (server_id, position, id);
     CREATE INDEX IF NOT EXISTS idx_community_messages_channel ON community_messages (channel_id, id DESC);
     CREATE INDEX IF NOT EXISTS idx_community_invites_code ON community_invites (code);
+    CREATE INDEX IF NOT EXISTS idx_friend_history_user ON friend_history (user_id, other_user_id);
+    CREATE INDEX IF NOT EXISTS idx_community_sections_server ON community_sections (server_id, position, id);
+    CREATE INDEX IF NOT EXISTS idx_community_roles_server ON community_roles (server_id, position, id);
+    CREATE INDEX IF NOT EXISTS idx_community_attachments_message ON community_attachments (message_id, id);
+    CREATE INDEX IF NOT EXISTS idx_community_poll_votes_message ON community_poll_votes (message_id, option_index);
   `);
   console.log('Supabase/PostgreSQL-Datenbank ist bereit.');
 }
@@ -250,7 +301,7 @@ async function requireUser(req, res, next) {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Serverfehler' }); }
 }
 
-app.use(express.json({ limit: '64kb' }));
+app.use(express.json({ limit: '20mb' }));
 app.use(cookieParser());
 app.use(express.static(path.join(__dirname, 'public')));
 
@@ -365,6 +416,10 @@ app.get('/api/friends', requireUser, async (req, res) => {
   });
 });
 
+app.get('/api/friends/history', requireUser, async (req,res)=>{
+  const rows=await db.all(`SELECT u.* FROM friend_history h JOIN users u ON u.id=h.other_user_id WHERE h.user_id=$1 ORDER BY h.removed_at DESC`,[req.user.id]);
+  res.json({friends:await getPublicUsers(rows)});
+});
 app.post('/api/friends/request/:id', requireUser, async (req,res) => {
   const targetId=String(req.params.id), meId=String(req.user.id);
   if(!/^\d+$/.test(targetId) || targetId===meId) return res.status(400).json({error:'Ungültiger Freund'});
@@ -430,6 +485,8 @@ app.delete('/api/friends/:id', requireUser, async (req,res) => {
   const targetId=String(req.params.id);
   const f=await db.get(`SELECT id FROM friendships WHERE status='accepted' AND ((requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1))`,[req.user.id,targetId]);
   if(!f) return res.status(404).json({error:'Freundschaft nicht gefunden'});
+  await db.run('INSERT INTO friend_history(user_id,other_user_id) VALUES($1,$2) ON CONFLICT(user_id,other_user_id) DO UPDATE SET removed_at=CURRENT_TIMESTAMP',[req.user.id,targetId]);
+  await db.run('INSERT INTO friend_history(user_id,other_user_id) VALUES($1,$2) ON CONFLICT(user_id,other_user_id) DO UPDATE SET removed_at=CURRENT_TIMESTAMP',[targetId,req.user.id]);
   await db.run('DELETE FROM friendships WHERE id=$1',[f.id]);
   res.json({ok:true});
 });
@@ -447,6 +504,11 @@ app.post('/api/friends/:id/favorite', requireUser, async (req,res) => {
 app.post('/api/friends/:id/block', requireUser, async (req,res) => {
   const targetId=String(req.params.id);
   if(!/^\d+$/.test(targetId)||targetId===String(req.user.id)) return res.status(400).json({error:'Ungültiger Benutzer'});
+  const wasFriend=await db.get(`SELECT id FROM friendships WHERE status='accepted' AND ((requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1))`,[req.user.id,targetId]);
+  if(wasFriend){
+    await db.run('INSERT INTO friend_history(user_id,other_user_id) VALUES($1,$2) ON CONFLICT(user_id,other_user_id) DO UPDATE SET removed_at=CURRENT_TIMESTAMP',[req.user.id,targetId]);
+    await db.run('INSERT INTO friend_history(user_id,other_user_id) VALUES($1,$2) ON CONFLICT(user_id,other_user_id) DO UPDATE SET removed_at=CURRENT_TIMESTAMP',[targetId,req.user.id]);
+  }
   await db.run('INSERT INTO blocks(blocker_id,blocked_id) VALUES($1,$2) ON CONFLICT(blocker_id,blocked_id) DO NOTHING',[req.user.id,targetId]);
   await db.run(`DELETE FROM friendships WHERE (requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1)`,[req.user.id,targetId]);
   res.json({ok:true});
@@ -491,6 +553,51 @@ async function canAccessChannel(userId, serverId, channelId) {
     WHERE c.id=$2 AND c.server_id=$3`, [userId, channelId, serverId]));
 }
 
+
+const DEFAULT_MEMBER_PERMISSIONS = {send_messages:true, connect_voice:true, use_voice:true, attach_files:true, create_polls:true};
+const ALL_SERVER_PERMISSIONS = {manage_server:true, manage_channels:true, manage_roles:true, manage_members:true, manage_messages:true, send_messages:true, connect_voice:true, use_voice:true, attach_files:true, create_polls:true};
+async function ensureCommunityDefaults(serverId){
+  const section=await db.get('SELECT id FROM community_sections WHERE server_id=$1 ORDER BY position ASC,id ASC LIMIT 1',[serverId]);
+  let sectionId=section?.id;
+  if(!sectionId){
+    const r=await db.get("INSERT INTO community_sections(server_id,name,position) VALUES($1,'Allgemein',0) RETURNING id",[serverId]);
+    sectionId=r.id;
+  }
+  await db.run('UPDATE community_channels SET section_id=$1 WHERE server_id=$2 AND section_id IS NULL',[sectionId,serverId]);
+  const role=await db.get('SELECT id FROM community_roles WHERE server_id=$1 ORDER BY position ASC,id ASC LIMIT 1',[serverId]);
+  let roleId=role?.id;
+  if(!roleId){
+    const r=await db.get("INSERT INTO community_roles(server_id,name,color,permissions,position) VALUES($1,'Mitglied','#8b93ad',$2::jsonb,0) RETURNING id",[serverId,JSON.stringify(DEFAULT_MEMBER_PERMISSIONS)]);
+    roleId=r.id;
+  }
+  await db.run('UPDATE community_server_members SET role_id=$1 WHERE server_id=$2 AND role_id IS NULL AND role<>\'owner\'',[roleId,serverId]);
+  return {sectionId,roleId};
+}
+async function serverPermission(userId, serverId, permission){
+  const s=await db.get('SELECT owner_id FROM community_servers WHERE id=$1',[serverId]);
+  if(!s || Number(s.owner_id)!==Number(userId)){
+    const m=await db.get(`SELECT sm.role,cr.permissions FROM community_server_members sm LEFT JOIN community_roles cr ON cr.id=sm.role_id WHERE sm.server_id=$1 AND sm.user_id=$2`,[serverId,userId]);
+    if(!m)return false;
+    const perms=m.permissions||{};
+    return Boolean(perms[permission]);
+  }
+  return true;
+}
+async function requireServerPermission(req,res,next,permission){
+  try{ if(await serverPermission(req.user.id,req.communityServer.id,permission)) return next(); res.status(403).json({error:'Du hast diese Berechtigung nicht.'}); }
+  catch(e){ console.error('Server-Berechtigung:',e.message); res.status(500).json({error:'Serverfehler'}); }
+}
+function normalizeInvite(raw){
+  let value=clean(raw||'');
+  try{const u=new URL(value); value=u.searchParams.get('invite')||value;}catch{}
+  return value.replace(/^invite[:/]+/i,'').trim().replace(/[^A-Za-z0-9_-]/g,'').slice(0,32);
+}
+function parseDataUrl(value){
+  const m=String(value||'').match(/^data:([^;]+);base64,(.+)$/);
+  if(!m)return null;
+  try{return {mime:m[1],data:Buffer.from(m[2],'base64')}}catch{return null}
+}
+
 app.get('/api/servers', requireUser, async (req,res) => {
   const rows = await db.all(`
     SELECT s.id,s.name,s.owner_id,s.created_at,sm.role AS membership_role,
@@ -505,58 +612,145 @@ app.post('/api/servers', requireUser, async (req,res) => {
   const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,48);
   if(name.length<2) return res.status(400).json({error:'Der Servername muss mindestens 2 Zeichen haben.'});
   const result=await db.get('INSERT INTO community_servers(owner_id,name) VALUES($1,$2) RETURNING *',[req.user.id,name]);
-  await db.run('INSERT INTO community_server_members(server_id,user_id,role) VALUES($1,$2,\'owner\')',[result.id,req.user.id]);
-  await db.run('INSERT INTO community_channels(server_id,name,type,position) VALUES($1,\'allgemein\',\'text\',0),($1,\'Lounge\',\'voice\',1)',[result.id]);
+  await db.run("INSERT INTO community_server_members(server_id,user_id,role) VALUES($1,$2,'owner')",[result.id,req.user.id]);
+  await db.run("INSERT INTO community_sections(server_id,name,position) VALUES($1,'Allgemein',0)",[result.id]);
+  const sec=await db.get('SELECT id FROM community_sections WHERE server_id=$1 ORDER BY id DESC LIMIT 1',[result.id]);
+  await db.run('INSERT INTO community_channels(server_id,name,type,position,section_id) VALUES($1,\'allgemein\',\'text\',0,$2),($1,\'Lounge\',\'voice\',1,$2)',[result.id,sec.id]);
+  await db.run("INSERT INTO community_roles(server_id,name,color,permissions,position) VALUES($1,'Mitglied','#8b93ad',$2::jsonb,0)",[result.id,JSON.stringify(DEFAULT_MEMBER_PERMISSIONS)]);
   res.json({ok:true,server:result});
 });
 
 app.get('/api/servers/:id', requireUser, async (req,res,next) => { req.params.serverId=req.params.id; next(); }, requireServerMember, async (req,res) => {
   const serverId=req.communityServer.id;
-  const channels=await db.all('SELECT id,name,type,position FROM community_channels WHERE server_id=$1 ORDER BY position ASC,id ASC',[serverId]);
-  const members=await db.all(`
-    SELECT u.* FROM community_server_members sm JOIN users u ON u.id=sm.user_id
-    WHERE sm.server_id=$1 ORDER BY LOWER(COALESCE(u.global_name,u.username)) ASC`,[serverId]);
+  await ensureCommunityDefaults(serverId);
+  const channels=await db.all('SELECT id,name,type,position,section_id FROM community_channels WHERE server_id=$1 ORDER BY position ASC,id ASC',[serverId]);
+  const sections=await db.all('SELECT id,name,position FROM community_sections WHERE server_id=$1 ORDER BY position ASC,id ASC',[serverId]);
+  const roles=await db.all('SELECT id,name,color,permissions,position FROM community_roles WHERE server_id=$1 ORDER BY position DESC,id ASC',[serverId]);
+  const members=await db.all(`SELECT u.id,u.discord_id,u.username,u.global_name,u.avatar,u.role,u.bio,u.xp,u.points,u.created_at,u.last_seen,u.discord_in_server,u.discord_roles,u.games_played,u.wins,u.last_login_reward,sm.role AS membership_role,sm.role_id,cr.name AS community_role_name,cr.color AS community_role_color FROM community_server_members sm JOIN users u ON u.id=sm.user_id LEFT JOIN community_roles cr ON cr.id=sm.role_id WHERE sm.server_id=$1 ORDER BY LOWER(COALESCE(u.global_name,u.username)) ASC`,[serverId]);
   const invites=await db.all(`SELECT code,uses,max_uses,expires_at,created_at FROM community_invites WHERE server_id=$1 AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) ORDER BY id DESC LIMIT 10`,[serverId]);
-  res.json({server:{id:req.communityServer.id,name:req.communityServer.name,owner_id:req.communityServer.owner_id,created_at:req.communityServer.created_at,membership_role:req.communityServer.membership_role},channels,members:await getPublicUsers(members),invites});
+  const canManage=await serverPermission(req.user.id,serverId,'manage_server');
+  const canChannels=await serverPermission(req.user.id,serverId,'manage_channels');
+  const canRoles=await serverPermission(req.user.id,serverId,'manage_roles');
+  const canMessages=await serverPermission(req.user.id,serverId,'manage_messages');
+  res.json({server:{id:req.communityServer.id,name:req.communityServer.name,owner_id:req.communityServer.owner_id,created_at:req.communityServer.created_at,membership_role:req.communityServer.membership_role},channels,sections,roles,members:await getPublicUsers(members),membersMeta:members.map(m=>({id:m.id,role_id:m.role_id,community_role_name:m.community_role_name,community_role_color:m.community_role_color,membership_role:m.membership_role})),invites,permissions:{manage_server:canManage,manage_channels:canChannels,manage_roles:canRoles,manage_members:await serverPermission(req.user.id,serverId,'manage_members'),manage_messages:canMessages,send_messages:await serverPermission(req.user.id,serverId,'send_messages'),attach_files:await serverPermission(req.user.id,serverId,'attach_files'),create_polls:await serverPermission(req.user.id,serverId,'create_polls'),connect_voice:await serverPermission(req.user.id,serverId,'connect_voice')}});
 });
 
-app.post('/api/servers/:serverId/channels', requireUser, requireServerMember, async (req,res) => {
-  if(req.communityServer.owner_id !== req.user.id) return res.status(403).json({error:'Nur der Serverbesitzer kann Kanäle erstellen.'});
-  const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32);
-  const type=req.body?.type==='voice'?'voice':'text';
-  if(name.length<1) return res.status(400).json({error:'Kanalname fehlt.'});
-  const max=await db.get('SELECT COALESCE(MAX(position),-1)+1 AS p FROM community_channels WHERE server_id=$1',[req.communityServer.id]);
-  const c=await db.get('INSERT INTO community_channels(server_id,name,type,position) VALUES($1,$2,$3,$4) RETURNING id,name,type,position',[req.communityServer.id,name,type,max.p]);
-  res.json({ok:true,channel:c});
+app.patch('/api/servers/:serverId', requireUser, requireServerMember, async (req,res) => {
+  if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_server'))) return res.status(403).json({error:'Keine Berechtigung zum Bearbeiten des Servers.'});
+  const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,48);
+  if(name.length<2)return res.status(400).json({error:'Der Servername muss mindestens 2 Zeichen haben.'});
+  const s=await db.get('UPDATE community_servers SET name=$1 WHERE id=$2 RETURNING id,name,owner_id,created_at',[name,req.communityServer.id]);
+  res.json({ok:true,server:s});
 });
-
-app.delete('/api/servers/:serverId/channels/:channelId', requireUser, requireServerMember, async (req,res) => {
-  if(req.communityServer.owner_id !== req.user.id) return res.status(403).json({error:'Nur der Serverbesitzer kann Kanäle löschen.'});
-  const channelId=Number(req.params.channelId);
-  const c=await db.get('SELECT * FROM community_channels WHERE id=$1 AND server_id=$2',[channelId,req.communityServer.id]);
-  if(!c) return res.status(404).json({error:'Kanal nicht gefunden.'});
-  if(c.name.toLowerCase()==='allgemein') return res.status(400).json({error:'Der Kanal Allgemein kann nicht gelöscht werden.'});
-  await db.run('DELETE FROM community_channels WHERE id=$1',[channelId]);
+app.delete('/api/servers/:serverId', requireUser, requireServerMember, async (req,res) => {
+  if(Number(req.communityServer.owner_id)!==Number(req.user.id)) return res.status(403).json({error:'Nur der Besitzer kann den Server löschen.'});
+  await db.run('DELETE FROM community_servers WHERE id=$1',[req.communityServer.id]);
+  res.json({ok:true});
+});
+app.post('/api/servers/:serverId/leave', requireUser, requireServerMember, async (req,res) => {
+  if(Number(req.communityServer.owner_id)===Number(req.user.id)) return res.status(400).json({error:'Als Besitzer musst du den Server löschen oder vorher den Besitz übertragen.'});
+  await db.run('DELETE FROM community_server_members WHERE server_id=$1 AND user_id=$2',[req.communityServer.id,req.user.id]);
   res.json({ok:true});
 });
 
-app.get('/api/servers/:serverId/channels/:channelId/messages', requireUser, requireServerMember, async (req,res) => {
-  const channelId=Number(req.params.channelId);
-  if(!(await canAccessChannel(req.user.id,req.communityServer.id,channelId))) return res.status(404).json({error:'Kanal nicht gefunden.'});
-  const rows=await db.all(`SELECT m.id,m.channel_id,m.user_id,m.message,m.created_at,u.username,u.global_name,u.avatar,u.role FROM community_messages m JOIN users u ON u.id=m.user_id WHERE m.channel_id=$1 ORDER BY m.id DESC LIMIT 150`,[channelId]);
-  res.json({messages:rows.reverse()});
+app.post('/api/servers/:serverId/sections', requireUser, requireServerMember, async (req,res) => {
+  if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_channels'))) return res.status(403).json({error:'Keine Berechtigung.'});
+  const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32); if(!name)return res.status(400).json({error:'Abschnittsname fehlt.'});
+  const max=await db.get('SELECT COALESCE(MAX(position),-1)+1 AS p FROM community_sections WHERE server_id=$1',[req.communityServer.id]);
+  const sec=await db.get('INSERT INTO community_sections(server_id,name,position) VALUES($1,$2,$3) RETURNING id,name,position',[req.communityServer.id,name,max.p]);
+  res.json({ok:true,section:sec});
+});
+app.patch('/api/servers/:serverId/sections/:sectionId', requireUser, requireServerMember, async (req,res) => {
+  if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_channels'))) return res.status(403).json({error:'Keine Berechtigung.'});
+  const id=Number(req.params.sectionId),name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32); if(!name)return res.status(400).json({error:'Name fehlt.'});
+  const sec=await db.get('UPDATE community_sections SET name=$1 WHERE id=$2 AND server_id=$3 RETURNING id,name,position',[name,id,req.communityServer.id]); if(!sec)return res.status(404).json({error:'Abschnitt nicht gefunden.'}); res.json({ok:true,section:sec});
+});
+app.delete('/api/servers/:serverId/sections/:sectionId', requireUser, requireServerMember, async (req,res) => {
+  if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_channels'))) return res.status(403).json({error:'Keine Berechtigung.'});
+  const id=Number(req.params.sectionId); const sec=await db.get('SELECT id,name FROM community_sections WHERE id=$1 AND server_id=$2',[id,req.communityServer.id]); if(!sec)return res.status(404).json({error:'Abschnitt nicht gefunden.'});
+  await db.run('UPDATE community_channels SET section_id=NULL WHERE section_id=$1',[id]); await db.run('DELETE FROM community_sections WHERE id=$1',[id]); await ensureCommunityDefaults(req.communityServer.id); res.json({ok:true});
 });
 
+app.post('/api/servers/:serverId/channels', requireUser, requireServerMember, async (req,res) => {
+  if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_channels'))) return res.status(403).json({error:'Keine Berechtigung.'});
+  const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32); const type=req.body?.type==='voice'?'voice':'text'; if(!name)return res.status(400).json({error:'Kanalname fehlt.'});
+  const sectionId=Number(req.body?.sectionId)|| (await ensureCommunityDefaults(req.communityServer.id)).sectionId;
+  const max=await db.get('SELECT COALESCE(MAX(position),-1)+1 AS p FROM community_channels WHERE server_id=$1',[req.communityServer.id]);
+  const c=await db.get('INSERT INTO community_channels(server_id,name,type,position,section_id) VALUES($1,$2,$3,$4,$5) RETURNING id,name,type,position,section_id',[req.communityServer.id,name,type,max.p,sectionId]);
+  res.json({ok:true,channel:c});
+});
+app.patch('/api/servers/:serverId/channels/:channelId', requireUser, requireServerMember, async (req,res) => {
+  if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_channels'))) return res.status(403).json({error:'Keine Berechtigung.'});
+  const id=Number(req.params.channelId); const c=await db.get('SELECT id,name,type FROM community_channels WHERE id=$1 AND server_id=$2',[id,req.communityServer.id]); if(!c)return res.status(404).json({error:'Kanal nicht gefunden.'});
+  const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32)||c.name; const sectionId=Number(req.body?.sectionId)||null;
+  const updated=await db.get('UPDATE community_channels SET name=$1,section_id=$2 WHERE id=$3 AND server_id=$4 RETURNING id,name,type,position,section_id',[name,sectionId,id,req.communityServer.id]); res.json({ok:true,channel:updated});
+});
+app.delete('/api/servers/:serverId/channels/:channelId', requireUser, requireServerMember, async (req,res) => {
+  if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_channels'))) return res.status(403).json({error:'Keine Berechtigung.'});
+  const channelId=Number(req.params.channelId); const c=await db.get('SELECT * FROM community_channels WHERE id=$1 AND server_id=$2',[channelId,req.communityServer.id]); if(!c)return res.status(404).json({error:'Kanal nicht gefunden.'});
+  if(c.name.toLowerCase()==='allgemein')return res.status(400).json({error:'Der Kanal Allgemein kann nicht gelöscht werden.'}); await db.run('DELETE FROM community_channels WHERE id=$1',[channelId]); res.json({ok:true});
+});
+
+app.get('/api/servers/:serverId/roles', requireUser, requireServerMember, async (req,res)=>{ await ensureCommunityDefaults(req.communityServer.id); res.json({roles:await db.all('SELECT id,name,color,permissions,position FROM community_roles WHERE server_id=$1 ORDER BY position DESC,id ASC',[req.communityServer.id])}); });
+app.post('/api/servers/:serverId/roles', requireUser, requireServerMember, async (req,res)=>{
+  if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_roles')))return res.status(403).json({error:'Keine Berechtigung.'});
+  const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32); if(!name)return res.status(400).json({error:'Rollenname fehlt.'});
+  const color=/^#[0-9a-fA-F]{6}$/.test(String(req.body?.color||''))?String(req.body.color):'#8b93ad';
+  const permissions=typeof req.body?.permissions==='object'&&req.body.permissions?req.body.permissions:{};
+  const max=await db.get('SELECT COALESCE(MAX(position),0)+1 AS p FROM community_roles WHERE server_id=$1',[req.communityServer.id]);
+  const role=await db.get('INSERT INTO community_roles(server_id,name,color,permissions,position) VALUES($1,$2,$3,$4::jsonb,$5) RETURNING id,name,color,permissions,position',[req.communityServer.id,name,color,JSON.stringify(permissions),max.p]); res.json({ok:true,role});
+});
+app.patch('/api/servers/:serverId/roles/:roleId', requireUser, requireServerMember, async (req,res)=>{
+  if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_roles')))return res.status(403).json({error:'Keine Berechtigung.'});
+  const id=Number(req.params.roleId); const old=await db.get('SELECT * FROM community_roles WHERE id=$1 AND server_id=$2',[id,req.communityServer.id]); if(!old)return res.status(404).json({error:'Rolle nicht gefunden.'});
+  const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32)||old.name; const color=/^#[0-9a-fA-F]{6}$/.test(String(req.body?.color||''))?String(req.body.color):old.color; const permissions=typeof req.body?.permissions==='object'&&req.body.permissions?req.body.permissions:old.permissions;
+  const role=await db.get('UPDATE community_roles SET name=$1,color=$2,permissions=$3::jsonb WHERE id=$4 AND server_id=$5 RETURNING id,name,color,permissions,position',[name,color,JSON.stringify(permissions),id,req.communityServer.id]); res.json({ok:true,role});
+});
+app.delete('/api/servers/:serverId/roles/:roleId', requireUser, requireServerMember, async (req,res)=>{ if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_roles')))return res.status(403).json({error:'Keine Berechtigung.'}); const id=Number(req.params.roleId); await db.run('UPDATE community_server_members SET role_id=NULL WHERE server_id=$1 AND role_id=$2',[req.communityServer.id,id]); await db.run('DELETE FROM community_roles WHERE id=$1 AND server_id=$2',[id,req.communityServer.id]); await ensureCommunityDefaults(req.communityServer.id); res.json({ok:true}); });
+app.post('/api/servers/:serverId/members/:memberId/role', requireUser, requireServerMember, async (req,res)=>{ if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_members')))return res.status(403).json({error:'Keine Berechtigung.'}); const memberId=Number(req.params.memberId),roleId=Number(req.body?.roleId)||null; const member=await db.get('SELECT user_id FROM community_server_members WHERE server_id=$1 AND user_id=$2',[req.communityServer.id,memberId]); if(!member)return res.status(404).json({error:'Mitglied nicht gefunden.'}); if(roleId){const role=await db.get('SELECT id FROM community_roles WHERE id=$1 AND server_id=$2',[roleId,req.communityServer.id]);if(!role)return res.status(404).json({error:'Rolle nicht gefunden.'});} await db.run('UPDATE community_server_members SET role_id=$1 WHERE server_id=$2 AND user_id=$3',[roleId,req.communityServer.id,memberId]); res.json({ok:true}); });
+
+app.get('/api/servers/:serverId/channels/:channelId/messages', requireUser, requireServerMember, async (req,res) => {
+  const channelId=Number(req.params.channelId); if(!(await canAccessChannel(req.user.id,req.communityServer.id,channelId)))return res.status(404).json({error:'Kanal nicht gefunden.'});
+  const rows=await db.all(`SELECT m.id,m.channel_id,m.user_id,m.message,m.created_at,m.message_type,m.poll_data,u.username,u.global_name,u.avatar,u.role FROM community_messages m JOIN users u ON u.id=m.user_id WHERE m.channel_id=$1 ORDER BY m.id DESC LIMIT 150`,[channelId]);
+  for(const row of rows){
+    row.attachments=await db.all('SELECT id,filename,mime,size FROM community_attachments WHERE message_id=$1 ORDER BY id ASC',[row.id]);
+    if(row.message_type==='poll'&&row.poll_data){
+      row.poll_data={...row.poll_data,counts:(await db.all('SELECT option_index,COUNT(*)::int AS count FROM community_poll_votes WHERE message_id=$1 GROUP BY option_index',[row.id])).reduce((a,x)=>(a[x.option_index]=x.count,a),{}),myVotes:(await db.all('SELECT option_index FROM community_poll_votes WHERE message_id=$1 AND user_id=$2',[row.id,req.user.id])).map(x=>x.option_index)};
+    }
+  }
+  res.json({messages:rows.reverse()});
+});
 app.post('/api/servers/:serverId/channels/:channelId/messages', requireUser, requireServerMember, async (req,res) => {
-  const channelId=Number(req.params.channelId);
-  if(!(await canAccessChannel(req.user.id,req.communityServer.id,channelId))) return res.status(404).json({error:'Kanal nicht gefunden.'});
-  const channel=await db.get('SELECT type FROM community_channels WHERE id=$1 AND server_id=$2',[channelId,req.communityServer.id]);
-  if(channel?.type!=='text') return res.status(400).json({error:'In einem Sprachkanal kann nicht geschrieben werden.'});
-  const message=clean(req.body?.message).slice(0,1000); if(!message) return res.status(400).json({error:'Nachricht darf nicht leer sein.'});
-  const info=await db.get('INSERT INTO community_messages(channel_id,user_id,message) VALUES($1,$2,$3) RETURNING id',[channelId,req.user.id,message]);
-  const row=await db.get(`SELECT m.id,m.channel_id,m.user_id,m.message,m.created_at,u.username,u.global_name,u.avatar,u.role FROM community_messages m JOIN users u ON u.id=m.user_id WHERE m.id=$1`,[info.id]);
-  io.sockets.sockets.forEach(s=>{ if(s?.user && s.serverMembershipId===req.communityServer.id && s.serverTextChannel===channelId) s.emit('server_channel_message',row); });
-  res.json({ok:true,message:row});
+  const channelId=Number(req.params.channelId); if(!(await canAccessChannel(req.user.id,req.communityServer.id,channelId)))return res.status(404).json({error:'Kanal nicht gefunden.'});
+  const channel=await db.get('SELECT type FROM community_channels WHERE id=$1 AND server_id=$2',[channelId,req.communityServer.id]); if(channel?.type!=='text')return res.status(400).json({error:'In einem Sprachkanal kann nicht geschrieben werden.'});
+  if(!(await serverPermission(req.user.id,req.communityServer.id,'send_messages')))return res.status(403).json({error:'Du darfst hier nicht schreiben.'});
+  const message=clean(req.body?.message).slice(0,1000); const attachments=Array.isArray(req.body?.attachments)?req.body.attachments:[]; const poll=(req.body?.poll&&typeof req.body.poll==='object')?req.body.poll:null;
+  if(!message&&!attachments.length&&!poll)return res.status(400).json({error:'Nachricht darf nicht leer sein.'});
+  if(attachments.length && !(await serverPermission(req.user.id,req.communityServer.id,'attach_files')))return res.status(403).json({error:'Du darfst keine Dateien hochladen.'});
+  if(poll && !(await serverPermission(req.user.id,req.communityServer.id,'create_polls')))return res.status(403).json({error:'Du darfst keine Abstimmungen erstellen.'});
+  const type=poll?'poll':'text'; const info=await db.get('INSERT INTO community_messages(channel_id,user_id,message,message_type,poll_data) VALUES($1,$2,$3,$4,$5::jsonb) RETURNING id',[channelId,req.user.id,message,type,poll?JSON.stringify(poll):null]);
+  for(const a of attachments.slice(0,8)){const parsed=parseDataUrl(a.data);const size=parsed?.data?.length||0;if(!parsed||size>12*1024*1024)continue;await db.run('INSERT INTO community_attachments(message_id,filename,mime,size,data) VALUES($1,$2,$3,$4,$5)',[info.id,String(a.filename||'Datei').slice(0,120),parsed.mime,size,parsed.data]);}
+  const row=await db.get(`SELECT m.id,m.channel_id,m.user_id,m.message,m.created_at,m.message_type,m.poll_data,u.username,u.global_name,u.avatar,u.role FROM community_messages m JOIN users u ON u.id=m.user_id WHERE m.id=$1`,[info.id]); row.attachments=await db.all('SELECT id,filename,mime,size FROM community_attachments WHERE message_id=$1 ORDER BY id ASC',[info.id]);
+  io.sockets.sockets.forEach(s=>{if(s?.user&&s.serverMembershipId===req.communityServer.id&&s.serverTextChannel===channelId)s.emit('server_channel_message',row)}); res.json({ok:true,message:row});
+});
+app.delete('/api/servers/:serverId/channels/:channelId/messages/:messageId', requireUser, requireServerMember, async (req,res)=>{const id=Number(req.params.messageId);const m=await db.get('SELECT user_id FROM community_messages WHERE id=$1 AND channel_id=$2',[id,Number(req.params.channelId)]);if(!m)return res.status(404).json({error:'Nachricht nicht gefunden.'});const own=Number(m.user_id)===Number(req.user.id);if(!own&&!(await serverPermission(req.user.id,req.communityServer.id,'manage_messages')))return res.status(403).json({error:'Du darfst diese Nachricht nicht löschen.'});await db.run('DELETE FROM community_messages WHERE id=$1',[id]);io.sockets.sockets.forEach(s=>{if(s?.user&&s.serverMembershipId===req.communityServer.id&&s.serverTextChannel===Number(req.params.channelId))s.emit('server_message_deleted',{messageId:id});});res.json({ok:true});});
+app.get('/api/community-attachments/:id', requireUser, async (req,res)=>{const a=await db.get('SELECT a.*,m.channel_id,cc.server_id FROM community_attachments a JOIN community_messages m ON m.id=a.message_id JOIN community_channels cc ON cc.id=m.channel_id WHERE a.id=$1',[Number(req.params.id)]);if(!a)return res.status(404).end();if(!(await canAccessChannel(req.user.id,a.server_id,a.channel_id)))return res.status(403).end();res.setHeader('Content-Type',a.mime);res.setHeader('Content-Disposition',`inline; filename="${String(a.filename).replace(/"/g,'')}"`);res.send(a.data);});
+
+app.post('/api/servers/:serverId/channels/:channelId/messages/:messageId/poll-vote', requireUser, requireServerMember, async (req,res)=>{
+  const serverId=req.communityServer.id,channelId=Number(req.params.channelId),messageId=Number(req.params.messageId),option=Number(req.body?.optionIndex);
+  if(!Number.isInteger(option)||option<0)return res.status(400).json({error:'Ungültige Antwort.'});
+  if(!(await canAccessChannel(req.user.id,serverId,channelId)))return res.status(404).json({error:'Kanal nicht gefunden.'});
+  const m=await db.get('SELECT poll_data,message_type FROM community_messages WHERE id=$1 AND channel_id=$2',[messageId,channelId]);
+  if(!m||m.message_type!=='poll'||!m.poll_data)return res.status(404).json({error:'Abstimmung nicht gefunden.'});
+  const options=Array.isArray(m.poll_data.options)?m.poll_data.options:[];if(option>=options.length)return res.status(400).json({error:'Ungültige Antwort.'});
+  if(m.poll_data.multi!==true)await db.run('DELETE FROM community_poll_votes WHERE message_id=$1 AND user_id=$2',[messageId,req.user.id]);
+  else if(await db.get('SELECT id FROM community_poll_votes WHERE message_id=$1 AND user_id=$2 AND option_index=$3',[messageId,req.user.id,option])){await db.run('DELETE FROM community_poll_votes WHERE message_id=$1 AND user_id=$2 AND option_index=$3',[messageId,req.user.id,option]);}
+  else await db.run('INSERT INTO community_poll_votes(message_id,user_id,option_index) VALUES($1,$2,$3)',[messageId,req.user.id,option]);
+  const counts=(await db.all('SELECT option_index,COUNT(*)::int AS count FROM community_poll_votes WHERE message_id=$1 GROUP BY option_index',[messageId])).reduce((a,x)=>(a[x.option_index]=x.count,a),{});
+  const myVotes=(await db.all('SELECT option_index FROM community_poll_votes WHERE message_id=$1 AND user_id=$2',[messageId,req.user.id])).map(x=>x.option_index);
+  const payload={messageId,counts,myVotes};
+  io.sockets.sockets.forEach(s=>{if(s?.user&&s.serverMembershipId===serverId&&s.serverTextChannel===channelId)s.emit('server_poll_updated',payload)});
+  res.json({ok:true,...payload});
 });
 
 app.post('/api/servers/:serverId/invites', requireUser, requireServerMember, async (req,res) => {
@@ -570,10 +764,8 @@ app.post('/api/servers/:serverId/invites', requireUser, requireServerMember, asy
 });
 
 app.post('/api/invites/join', requireUser, async (req,res) => {
-  let raw=clean(req.body?.invite||'');
+  let raw=normalizeInvite(req.body?.invite);
   if(!raw) return res.status(400).json({error:'Einladung fehlt.'});
-  try { const u=new URL(raw); const fromQuery=u.searchParams.get('invite'); if(fromQuery) raw=fromQuery; } catch {}
-  raw=raw.replace(/^invite[:/]+/i,'').trim().replace(/[^A-Za-z0-9_-]/g,'').slice(0,32);
   const invite=await db.get(`SELECT i.*,s.name,s.owner_id FROM community_invites i JOIN community_servers s ON s.id=i.server_id WHERE i.code=$1 AND (i.expires_at IS NULL OR i.expires_at>CURRENT_TIMESTAMP)`,[raw]);
   if(!invite) return res.status(404).json({error:'Einladung ist ungültig oder abgelaufen.'});
   if(invite.max_uses!==null && invite.uses>=invite.max_uses) return res.status(409).json({error:'Diese Einladung wurde bereits zu oft verwendet.'});
@@ -791,6 +983,8 @@ io.on('connection', socket => {
       const membership=await db.get('SELECT role FROM community_server_members WHERE server_id=$1 AND user_id=$2',[serverId,socket.user.id]);
       const channel=await db.get('SELECT id,type FROM community_channels WHERE id=$1 AND server_id=$2',[channelId,serverId]);
       if(!membership || !channel || channel.type!=='voice') return socket.emit('server_voice_error',{error:'Sprachkanal nicht verfügbar.'});
+      if(!(await serverPermission(socket.user.id,serverId,'connect_voice'))) return socket.emit('server_voice_error',{error:'Du darfst diesen Sprachkanal nicht betreten.'});
+      if(socket.voiceServerId&&socket.voiceChannelId){ const oldServer=socket.voiceServerId,oldChannel=socket.voiceChannelId; for(const [,s] of io.sockets.sockets){if(s!==socket&&s.voiceServerId===oldServer&&s.voiceChannelId===oldChannel)s.emit('server_voice_peer_left',{socketId:socket.id});} }
       for(const [,s] of io.sockets.sockets){ if(s!==socket && s.voiceServerId===serverId && s.voiceChannelId===channelId) socket.emit('server_voice_peer', {socketId:s.id,user:s.socketUserSummary||s.user}); }
       socket.voiceServerId=serverId; socket.voiceChannelId=channelId; socket.socketUserSummary={id:socket.user.id,username:socket.user.username,global_name:socket.user.global_name,avatar:socket.user.avatar};
       for(const [,s] of io.sockets.sockets){ if(s!==socket && s.voiceServerId===serverId && s.voiceChannelId===channelId) s.emit('server_voice_peer_joined',{socketId:socket.id,user:socket.socketUserSummary}); }
