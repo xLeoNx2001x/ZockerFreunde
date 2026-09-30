@@ -101,17 +101,22 @@ function renderFriends(){
   }
   $$('.friend-tab').forEach(b=>b.onclick=()=>draw(b.dataset.ft)); draw('friends');
 }
-async function sendFriendRequest(id,button){id=String(id);
+async function sendFriendRequest(id,button){
+  id=String(id);
   if(button?.disabled)return;
   try{
-    if(button){button.disabled=true;button.classList.add('friend-request-sent');button.title='Anfrage gesendet';}
-    await api('/api/friends/request/'+id,{method:'POST'});
+    if(button){button.disabled=true;button.classList.add('friend-request-sent');button.title='Anfrage wird gesendet …';}
+    await api('/api/friends/request/'+encodeURIComponent(id),{method:'POST'});
     await loadFriends();
-    setTimeout(()=>button?.remove(),700);
+    renderMembers();
+    if($('#page-home')?.classList.contains('active'))renderHome();
+    if($('#page-friends')?.classList.contains('active'))renderFriends();
     toast('Freundschaftsanfrage gesendet!');
   }catch(e){
-    if(button){button.disabled=false;button.classList.remove('friend-request-sent');}
-    toast('Anfrage konnte nicht gesendet werden.');
+    if(button){button.disabled=false;button.classList.remove('friend-request-sent');button.title='Freundschaftsanfrage senden';}
+    let msg='Anfrage konnte nicht gesendet werden.';
+    try{const d=JSON.parse(String(e.message||''));if(d.error)msg=d.error;}catch{}
+    toast(msg);
   }
 }
 async function acceptFriend(id){try{const target=friendsData.incoming.find(u=>u.id===String(id));const f=target;/* friendship id is not exposed in publicUser, use lookup helper below */await api('/api/friends/accept-by-user/'+id,{method:'POST'});await loadFriends();renderFriends();toast('Freundschaft angenommen!')}catch(e){toast('Anfrage konnte nicht angenommen werden.')}}
@@ -194,17 +199,21 @@ function renderPrivate(){const list=members.filter(u=>!me||!sameId(u.id,me.id));
 async function startPrivate(id){
   id=String(id);
   if(!me){toast('Bitte zuerst mit Discord anmelden.');return;}
-  currentPrivate=members.find(u=>sameId(u.id,id))||friendsData.friends.find(u=>sameId(u.id,id));
-  if(!currentPrivate){
+  let target=members.find(u=>sameId(u.id,id))||friendsData.friends.find(u=>sameId(u.id,id));
+  if(!target){
     try{
       const fresh=await api('/api/member/'+encodeURIComponent(id));
-      currentPrivate=fresh?.member||null;
-      if(currentPrivate&&!members.some(u=>sameId(u.id,currentPrivate.id)))members.push(currentPrivate);
-    }catch(e){}
+      target=fresh?.member||null;
+      if(target&&!members.some(u=>sameId(u.id,target.id)))members.push(target);
+    }catch(e){
+      toast('Mitglied konnte nicht geladen werden.');
+      return;
+    }
   }
-  if(!currentPrivate){toast('Mitglied nicht gefunden.');return;}
-  go('private');
-  await openPrivate();
+  if(!target){toast('Mitglied nicht gefunden.');return;}
+  currentPrivate=target;
+  await go('private');
+  if(currentPrivate&&sameId(currentPrivate.id,id))await openPrivate();
 }
 async function openPrivate(){if(!currentPrivate)return;const p=$('#privatePanel');p.innerHTML=`<div class="chat-head"><h2>✉ ${esc(currentPrivate.global_name||currentPrivate.username)}</h2><small class="online-label"><i class="dot ${isOnline(currentPrivate)?'online':''}"></i>${isOnline(currentPrivate)?'Online':'Offline'}</small></div><div id="privateMessages" class="messages"></div><form id="privateForm" class="composer"><input id="privateInput" maxlength="1000" placeholder="Private Nachricht ..."><button class="primary">Senden</button></form>`;$('#privateForm').onsubmit=async e=>{
   e.preventDefault();
