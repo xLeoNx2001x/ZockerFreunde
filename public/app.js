@@ -162,20 +162,32 @@ function openFriendMenu(id){
   const current=Boolean(friendsData.friends.find(u=>sameId(u.id,sid))?.favorite);
   let old=$('#friendActionModal');if(old)old.remove();
   const e=document.createElement('div');e.id='friendActionModal';e.className='friend-modal';
-  const safeId=JSON.stringify(sid);
   e.innerHTML=`<div class="friend-modal-card">
-    <button class="gate-close" onclick="closeFriendMenu()">×</button>
+    <button type="button" class="gate-close" data-friend-action="close">×</button>
     <div class="friend-modal-user"><img class="avatar" src="${esc(avatar(selectedFriend))}">
       <div><h2>${esc(selectedFriend.global_name||selectedFriend.username)}</h2><span>${esc(displayRole(selectedFriend))}</span></div>
     </div>
     <div class="friend-choice-grid">
-      <button class="friend-choice" onclick="closeFriendMenu();startPrivate(${safeId})"><strong>1</strong><span>✉</span><b>Privaten Chat starten</b></button>
-      <button class="friend-choice" onclick="toggleFavorite(${safeId},${current});closeFriendMenu()"><strong>2</strong><span>${current?'★':'☆'}</span><b>${current?'Favorit entfernen':'Freund favorisieren'}</b></button>
-      <button class="friend-choice danger" onclick="removeFriend(${safeId})"><strong>3</strong><span>🗑</span><b>Freund löschen</b></button>
-      <button class="friend-choice danger" onclick="blockFriend(${safeId})"><strong>4</strong><span>⛔</span><b>Freund blockieren</b></button>
+      <button type="button" class="friend-choice" data-friend-action="private"><strong>1</strong><span>✉</span><b>Privaten Chat starten</b></button>
+      <button type="button" class="friend-choice" data-friend-action="favorite"><strong>2</strong><span>${current?'★':'☆'}</span><b>${current?'Favorit entfernen':'Freund favorisieren'}</b></button>
+      <button type="button" class="friend-choice danger" data-friend-action="remove"><strong>3</strong><span>🗑</span><b>Freund löschen</b></button>
+      <button type="button" class="friend-choice danger" data-friend-action="block"><strong>4</strong><span>⛔</span><b>Freund blockieren</b></button>
     </div>
   </div>`;
-  document.body.appendChild(e);requestAnimationFrame(()=>e.classList.add('show'));
+  document.body.appendChild(e);
+  e.addEventListener('click',async event=>{
+    const button=event.target.closest('[data-friend-action]');
+    if(!button)return;
+    event.preventDefault();
+    event.stopPropagation();
+    const action=button.dataset.friendAction;
+    if(action==='close'){closeFriendMenu();return;}
+    if(action==='private'){closeFriendMenu();await startPrivate(sid);return;}
+    if(action==='favorite'){await toggleFavorite(sid,current);return;}
+    if(action==='remove'){await removeFriend(sid);return;}
+    if(action==='block'){await blockFriend(sid);return;}
+  });
+  requestAnimationFrame(()=>e.classList.add('show'));
 }
 function closeFriendMenu(){const e=$('#friendActionModal');if(e){e.classList.remove('show');setTimeout(()=>e.remove(),180)}selectedFriend=null}
 function renderPrivate(){const list=members.filter(u=>!me||!sameId(u.id,me.id));$('#page-private').innerHTML=`<div class="private-layout"><div class="card chat-list"><h3 style="padding:10px 12px">Private Chats</h3>${me?list.map(u=>`<div class="chat-person" onclick="startPrivate(${JSON.stringify(String(u.id))})"><img class="avatar" src="${esc(avatar(u))}"><div><b>${esc(u.global_name||u.username)}</b><div class="online-label"><i class="dot ${isOnline(u)?'online':''}"></i>${isOnline(u)?'Online':'Offline'}</div></div></div>`).join('')||'<div class="empty">Noch keine anderen Mitglieder.</div>':'<div class="empty">Melde dich mit Discord an, um private Chats zu nutzen.</div>'}</div><div id="privatePanel" class="card chat-shell"><div class="empty">Wähle links einen Chat aus.</div></div></div>`}
