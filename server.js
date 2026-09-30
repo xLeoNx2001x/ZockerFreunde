@@ -7,6 +7,7 @@ const fs = require('fs');
 const cookieParser = require('cookie-parser');
 const { Pool } = require('pg');
 const { Server } = require('socket.io');
+const compression = require('compression');
 
 if (!process.env.DATABASE_URL) {
   console.error('DATABASE_URL fehlt. Bitte die Supabase/PostgreSQL-Verbindungs-URL als Environment Variable setzen.');
@@ -17,7 +18,9 @@ const pool = new Pool({
   ssl: process.env.DATABASE_SSL === 'false' ? false : { rejectUnauthorized: false },
   max: Number(process.env.DB_POOL_MAX || 5),
   idleTimeoutMillis: 30000,
-  connectionTimeoutMillis: 10000
+  connectionTimeoutMillis: 10000,
+  maxUses: 7500,
+  allowExitOnIdle: true
 });
 
 const db = {
@@ -309,9 +312,9 @@ async function currentUser(req) {
   if (row) await db.run('UPDATE users SET last_seen=CURRENT_TIMESTAMP WHERE id=$1', [row.id]);
   return row || null;
 }
-async function publicUser(u) {
+async function publicUser(u, messageCountOverride = null) {
   const roles = (() => { try { return JSON.parse(u.discord_roles || '[]'); } catch { return []; } })();
-  const messageCount = (await db.get('SELECT COUNT(*)::int AS count FROM public_messages WHERE user_id=$1', [u.id])).count;
+  const messageCount = messageCountOverride == null ? (await db.get('SELECT COUNT(*)::int AS count FROM public_messages WHERE user_id=$1', [u.id])).count : Number(messageCountOverride);
   const level = levelFromXP(u.xp);
   const start = levelStartXP(level);
   const next = levelNextXP(level);
@@ -327,7 +330,13 @@ async function publicUser(u) {
     membership_role: u.membership_role || 'member'
   };
 }
-async function getPublicUsers(rows) { return Promise.all(rows.map(publicUser)); }
+async function getPublicUsers(rows) {
+  if (!rows.length) return [];
+  const ids = rows.map(r => Number(r.id));
+  const counts = await db.all('SELECT user_id,COUNT(*)::int AS count FROM public_messages WHERE user_id = ANY($1::int[]) GROUP BY user_id', [ids]);
+  const map = new Map(counts.map(r => [Number(r.user_id), Number(r.count)]));
+  return Promise.all(rows.map(u => publicUser(u, map.get(Number(u.id)) || 0)));
+}
 async function requireUser(req, res, next) {
   try {
     const u = await currentUser(req);
@@ -337,9 +346,20 @@ async function requireUser(req, res, next) {
   } catch (e) { console.error(e); res.status(500).json({ error: 'Serverfehler' }); }
 }
 
+app.disable('x-powered-by');
+app.set('etag', 'strong');
+app.use(compression({ threshold: 1024, level: 6 }));
 app.use(express.json({ limit: '20mb' }));
 app.use(cookieParser());
-app.use(express.static(path.join(__dirname, 'public')));
+app.use(express.static(path.join(__dirname, 'public'), {
+  maxAge: process.env.NODE_ENV === 'production' ? '7d' : 0,
+  immutable: false,
+  setHeaders(res, filePath) {
+    if (filePath.endsWith('.png') || filePath.endsWith('.jpg') || filePath.endsWith('.webp') || filePath.endsWith('.svg') || filePath.endsWith('.ico')) {
+      res.setHeader('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400');
+    }
+  }
+}));
 
 app.get('/health', async (req, res) => {
   try { await db.get('SELECT 1 AS ok'); res.json({ ok: true, database: 'connected' }); }
@@ -807,12 +827,23 @@ app.post('/api/servers/:serverId/members/:memberId/role', requireUser, requireSe
 app.get('/api/servers/:serverId/channels/:channelId/messages', requireUser, requireServerMember, async (req,res) => {
   const channelId=Number(req.params.channelId); if(!(await canAccessChannel(req.user.id,req.communityServer.id,channelId)))return res.status(404).json({error:'Kanal nicht gefunden.'});
   const rows=await db.all(`SELECT m.id,m.channel_id,m.user_id,m.message,m.created_at,m.edited_at,m.pinned,m.message_type,m.poll_data,u.username,u.global_name,u.avatar,u.role FROM community_messages m JOIN users u ON u.id=m.user_id WHERE m.channel_id=$1 ORDER BY m.id DESC LIMIT 150`,[channelId]);
+  if (!rows.length) return res.json({messages:[]});
+  const ids=rows.map(r=>Number(r.id));
+  const [attachments,reactions,pollCounts,myVotes]=await Promise.all([
+    db.all('SELECT id,message_id,filename,mime,size FROM community_attachments WHERE message_id = ANY($1::int[]) ORDER BY id ASC',[ids]),
+    db.all('SELECT message_id,emoji,COUNT(*)::int AS count,BOOL_OR(user_id=$2) AS mine,MIN(id) AS first_id FROM community_message_reactions WHERE message_id = ANY($1::int[]) GROUP BY message_id,emoji ORDER BY first_id',[ids,req.user.id]),
+    db.all('SELECT message_id,option_index,COUNT(*)::int AS count FROM community_poll_votes WHERE message_id = ANY($1::int[]) GROUP BY message_id,option_index',[ids]),
+    db.all('SELECT message_id,option_index FROM community_poll_votes WHERE message_id = ANY($1::int[]) AND user_id=$2',[ids,req.user.id])
+  ]);
+  const attachmentMap=new Map(),reactionMap=new Map(),countMap=new Map(),voteMap=new Map();
+  for(const x of attachments){const a=attachmentMap.get(Number(x.message_id))||[];a.push(x);attachmentMap.set(Number(x.message_id),a)}
+  for(const x of reactions){const a=reactionMap.get(Number(x.message_id))||[];a.push({emoji:x.emoji,count:Number(x.count),mine:Boolean(x.mine)});reactionMap.set(Number(x.message_id),a)}
+  for(const x of pollCounts){const a=countMap.get(Number(x.message_id))||{};a[x.option_index]=Number(x.count);countMap.set(Number(x.message_id),a)}
+  for(const x of myVotes){const a=voteMap.get(Number(x.message_id))||[];a.push(Number(x.option_index));voteMap.set(Number(x.message_id),a)}
   for(const row of rows){
-    row.attachments=await db.all('SELECT id,filename,mime,size FROM community_attachments WHERE message_id=$1 ORDER BY id ASC',[row.id]);
-    row.reactions=await db.all('SELECT emoji,COUNT(*)::int AS count,BOOL_OR(user_id=$2) AS mine FROM community_message_reactions WHERE message_id=$1 GROUP BY emoji ORDER BY MIN(id)',[row.id,req.user.id]);
-    if(row.message_type==='poll'&&row.poll_data){
-      row.poll_data={...row.poll_data,counts:(await db.all('SELECT option_index,COUNT(*)::int AS count FROM community_poll_votes WHERE message_id=$1 GROUP BY option_index',[row.id])).reduce((a,x)=>(a[x.option_index]=x.count,a),{}),myVotes:(await db.all('SELECT option_index FROM community_poll_votes WHERE message_id=$1 AND user_id=$2',[row.id,req.user.id])).map(x=>x.option_index)};
-    }
+    row.attachments=attachmentMap.get(Number(row.id))||[];
+    row.reactions=reactionMap.get(Number(row.id))||[];
+    if(row.message_type==='poll'&&row.poll_data){row.poll_data={...row.poll_data,counts:countMap.get(Number(row.id))||{},myVotes:voteMap.get(Number(row.id))||[]};}
   }
   res.json({messages:rows.reverse()});
 });

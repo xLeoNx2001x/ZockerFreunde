@@ -466,7 +466,10 @@ async function saveAdminMember(id){
 async function saveBio(){await api('/api/profile',{method:'POST',body:JSON.stringify({bio:$('#bioInput').value})});const d=await api('/api/me');me=d.user;members=members.map(x=>x.id===me.id?me:x);toast('Profil gespeichert');renderMembers();renderHome()}
 async function setTheme(theme){document.body.classList.remove('light','dark');if(theme!=='neon')document.body.classList.add(theme);await api('/api/settings',{method:'POST',body:JSON.stringify({theme})});renderSettings()}
 async function logout(){await api('/auth/logout',{method:'POST'});location.reload()}
+let refreshMembersTimer=0, refreshMembersBusy=false;
 function refreshMembers(){
+  if(refreshMembersBusy)return Promise.resolve();
+  refreshMembersBusy=true;
   return api('/api/members').then(d=>{
     members=d.members;
     if(me){
@@ -483,7 +486,7 @@ function refreshMembers(){
     renderHome();
     if($('.page.active')?.id==='page-members')renderMembers();
     if($('.page.active')?.id==='page-leaderboard')renderLeaderboard();
-  }).catch(()=>{});
+  }).catch(()=>{}).finally(()=>{refreshMembersBusy=false;});
 }
 function connectSocket(){if(socket)return;socket=io();socket.on('public_message',m=>{
   if(me&&sameId(m.user_id,me.id)){const oldLevel=Number(me.level||1);me={...me,xp:me.xp+Number(m.xp_gain||0),message_count:(me.message_count||0)+1};me.level=levelFromXPClient(me.xp);me.level_start_xp=levelStartXPClient(me.level);me.level_next_xp=levelNextXPClient(me.level);me.level_progress=Math.min(100,Math.max(0,((me.xp-me.level_start_xp)/(me.level_next_xp-me.level_start_xp))*100));members=members.map(u=>sameId(u.id,me.id)?me:u);localStorage.setItem(`zf_level_${me.id}`,String(me.level||1));if(me.level>oldLevel)showLevelUp(me.level);if($('#page-leaderboard')?.classList.contains('active'))renderLeaderboard();}
@@ -494,7 +497,9 @@ socket.on('public_chat_cleared',()=>{const e=$('#publicMessages');if(e)e.innerHT
 socket.on('private_message',m=>{if(currentPrivate&&(sameId(m.sender_id,currentPrivate.id)||sameId(m.receiver_id,currentPrivate.id))){const e=$('#privateMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollPrivate()}}});
 bindCommunitySocket();
 socket.on('presence',p=>{members=members.map(u=>sameId(u.id,p.userId)?{...u,last_seen:p.status==='online'?new Date().toISOString():u.last_seen}:u);renderHome();if($('.page.active')?.id==='page-members')renderMembers()});
-setInterval(refreshMembers,30000);
+clearInterval(window.zfMemberRefreshTimer);
+window.zfMemberRefreshTimer=setInterval(()=>{if(document.visibilityState==='visible')refreshMembers()},60000);
+document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible'&&me)refreshMembers()});
 }async function go(page,update=true){
   if(protectedPages.has(page)&&!me){showLoginGate();return}
   $$(' .page').forEach(p=>p.classList.remove('active'));$(`#page-${page}`).classList.add('active');
@@ -536,16 +541,27 @@ async function autoJoinPendingInvite(){
   try{const d=await api('/api/invites/join',{method:'POST',body:JSON.stringify({invite:code})});toast(d.alreadyMember?`Du bist bereits auf „${d.serverName}“.`:`Du bist „${d.serverName}“ beigetreten!`);await loadCommunityServers();if(communityServers.some(s=>sameId(s.id,d.serverId)))await openCommunityServer(d.serverId);}catch(e){let msg='Einladung konnte nicht angenommen werden.';try{const d=JSON.parse(e.message);if(d.error)msg=d.error}catch{}toast(msg)}
 }
 capturePendingInvite();
-fetch('/api/me').then(r=>r.json()).then(async d=>{me=d.user;if(!me){renderTop();renderHome();setPageTheme('home');return}const m=await api('/api/members');members=m.members;try{friendsData=await api('/api/friends')}catch{}renderTop();await loadNotifications();renderTop();renderHome();renderMembers();renderChat();renderPrivate();renderLeaderboard();try{await loadCommunityServers();}catch{}renderServers();if(communityServers[0]){try{await openCommunityServer(communityServers[0].id)}catch{}}await autoJoinPendingInvite();renderSettings();connectSocket();setPageTheme('home');}).catch(console.error);
-fetch('/api/settings').then(r=>r.ok?r.json():null).then(d=>{if(d?.settings?.theme&&d.settings.theme!=='neon')document.body.classList.add(d.settings.theme)}).catch(()=>{});
-fetch('/api/config').then(r=>r.json()).then(c=>{
-  config=c;
+Promise.all([
+  fetch('/api/me').then(r=>r.json()),
+  fetch('/api/settings').then(r=>r.ok?r.json():null).catch(()=>null),
+  fetch('/api/config').then(r=>r.json()).catch(()=>null)
+]).then(async ([session,settingsData,configData])=>{
+  me=session.user;
+  if(settingsData?.settings?.theme&&settingsData.settings.theme!=='neon')document.body.classList.add(settingsData.settings.theme);
+  if(configData)config=configData;
+  if(!me){renderTop();renderHome();setPageTheme('home');return;}
+  const [membersData,friends] = await Promise.all([api('/api/members'),api('/api/friends').catch(()=>({friends:[],sent:[],incoming:[],blocked:[]}))]);
+  members=membersData.members; friendsData=friends;
+  renderTop();
+  await loadNotifications();
+  renderTop();renderHome();renderMembers();renderChat();renderPrivate();renderLeaderboard();
+  await loadCommunityServers().catch(()=>{});
+  renderServers();
+  if(communityServers[0])await openCommunityServer(communityServers[0].id).catch(()=>{});
+  await autoJoinPendingInvite();
+  renderSettings();connectSocket();setPageTheme('home');
   document.querySelectorAll('#discordLink,#settingsDiscord').forEach(a=>{
-    if(c.discordInvite){a.href=c.discordInvite;a.removeAttribute('aria-disabled');}
-    else{
-      a.href='#';
-      a.setAttribute('aria-disabled','true');
-      a.onclick=e=>{e.preventDefault();toast('Discord-Invite fehlt noch. Auf Render DISCORD_INVITE_URL eintragen.');};
-    }
+    if(config.discordInvite){a.href=config.discordInvite;a.removeAttribute('aria-disabled');}
+    else{a.href='#';a.setAttribute('aria-disabled','true');a.onclick=e=>{e.preventDefault();toast('Discord-Invite fehlt noch. Auf Render DISCORD_INVITE_URL eintragen.');};}
   });
-}).catch(()=>{});
+}).catch(console.error);
