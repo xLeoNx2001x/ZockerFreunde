@@ -78,6 +78,29 @@ async function initDatabase() {
       theme TEXT NOT NULL DEFAULT 'neon',
       notifications INTEGER NOT NULL DEFAULT 1
     );
+    CREATE TABLE IF NOT EXISTS friendships (
+      id SERIAL PRIMARY KEY,
+      requester_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      addressee_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','accepted','declined')),
+      requester_favorite BOOLEAN NOT NULL DEFAULT FALSE,
+      addressee_favorite BOOLEAN NOT NULL DEFAULT FALSE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      updated_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      CHECK (requester_id <> addressee_id)
+    );
+    CREATE TABLE IF NOT EXISTS blocks (
+      id SERIAL PRIMARY KEY,
+      blocker_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      blocked_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(blocker_id, blocked_id),
+      CHECK (blocker_id <> blocked_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_friendships_requester ON friendships (requester_id, status);
+    CREATE INDEX IF NOT EXISTS idx_friendships_addressee ON friendships (addressee_id, status);
+    CREATE INDEX IF NOT EXISTS idx_blocks_blocker ON blocks (blocker_id);
+    CREATE INDEX IF NOT EXISTS idx_blocks_blocked ON blocks (blocked_id);
     CREATE INDEX IF NOT EXISTS idx_users_xp ON users (xp DESC);
     CREATE INDEX IF NOT EXISTS idx_public_messages_id ON public_messages (id DESC);
     CREATE INDEX IF NOT EXISTS idx_private_messages_pair ON private_messages (sender_id, receiver_id, id);
@@ -243,6 +266,126 @@ app.get('/api/chat/private/:id', requireUser, async (req, res) => {
   const other = Number(req.params.id);
   const rows = await db.all(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM private_messages m JOIN users u ON u.id=m.sender_id WHERE (sender_id=$1 AND receiver_id=$2) OR (sender_id=$3 AND receiver_id=$4) ORDER BY m.id ASC LIMIT 200`, [req.user.id, other, other, req.user.id]);
   res.json({ messages: rows });
+});
+
+async function friendPublicUser(id) {
+  const u = await db.get('SELECT * FROM users WHERE id=$1', [id]);
+  return u ? await publicUser(u) : null;
+}
+async function relationshipBetween(a, b) {
+  return await db.get(`SELECT * FROM friendships WHERE (requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1) ORDER BY id DESC LIMIT 1`, [a,b]);
+}
+async function isBlockedEitherWay(a,b) {
+  return Boolean(await db.get('SELECT 1 FROM blocks WHERE (blocker_id=$1 AND blocked_id=$2) OR (blocker_id=$2 AND blocked_id=$1) LIMIT 1',[a,b]));
+}
+
+app.get('/api/friends', requireUser, async (req, res) => {
+  const id = req.user.id;
+  const friends = await db.all(`
+    SELECT u.*, f.id AS friendship_id,
+      CASE WHEN f.requester_id=$1 THEN f.requester_favorite ELSE f.addressee_favorite END AS favorite
+    FROM friendships f JOIN users u ON u.id = CASE WHEN f.requester_id=$1 THEN f.addressee_id ELSE f.requester_id END
+    WHERE f.status='accepted' AND (f.requester_id=$1 OR f.addressee_id=$1)
+    ORDER BY favorite DESC, LOWER(COALESCE(u.global_name,u.username)) ASC`, [id]);
+  const sent = await db.all(`SELECT u.*,f.id AS friendship_id,f.created_at FROM friendships f JOIN users u ON u.id=f.addressee_id WHERE f.requester_id=$1 AND f.status='pending' ORDER BY f.created_at DESC`, [id]);
+  const incoming = await db.all(`SELECT u.*,f.id AS friendship_id,f.created_at FROM friendships f JOIN users u ON u.id=f.requester_id WHERE f.addressee_id=$1 AND f.status='pending' ORDER BY f.created_at DESC`, [id]);
+  const blocked = await db.all(`SELECT u.*,b.id AS block_id,b.created_at FROM blocks b JOIN users u ON u.id=b.blocked_id WHERE b.blocker_id=$1 ORDER BY b.created_at DESC`, [id]);
+  res.json({
+    friends: await Promise.all(friends.map(async u => ({...(await publicUser(u)), favorite:Boolean(u.favorite), friendship_id:u.friendship_id}))),
+    sent: await getPublicUsers(sent), incoming: await getPublicUsers(incoming), blocked: await getPublicUsers(blocked)
+  });
+});
+
+app.post('/api/friends/request/:id', requireUser, async (req,res) => {
+  const targetId=Number(req.params.id), meId=req.user.id;
+  if(!Number.isInteger(targetId) || targetId===meId) return res.status(400).json({error:'Ungültiger Freund'});
+  if(!await db.get('SELECT id FROM users WHERE id=$1',[targetId])) return res.status(404).json({error:'Mitglied nicht gefunden'});
+  if(await isBlockedEitherWay(meId,targetId)) return res.status(403).json({error:'Freundschaftsanfrage nicht möglich.'});
+  const rel=await relationshipBetween(meId,targetId);
+  if(rel && rel.status==='accepted') return res.status(409).json({error:'Ihr seid bereits Freunde.'});
+  if(rel && rel.status==='pending') return res.status(409).json({error:rel.requester_id===meId?'Anfrage bereits gesendet.':'Diese Person hat dir bereits eine Anfrage gesendet.'});
+  if(rel) await db.run('DELETE FROM friendships WHERE id=$1',[rel.id]);
+  await db.run('INSERT INTO friendships(requester_id,addressee_id,status) VALUES($1,$2,\'pending\')',[meId,targetId]);
+  res.json({ok:true});
+});
+
+app.post('/api/friends/:id/accept', requireUser, async (req,res) => {
+  const friendshipId=Number(req.params.id);
+  const f=await db.get('SELECT * FROM friendships WHERE id=$1 AND addressee_id=$2 AND status=\'pending\'',[friendshipId,req.user.id]);
+  if(!f) return res.status(404).json({error:'Anfrage nicht gefunden'});
+  if(await isBlockedEitherWay(req.user.id,f.requester_id)) return res.status(403).json({error:'Diese Freundschaft ist blockiert.'});
+  await db.run('UPDATE friendships SET status=\'accepted\',updated_at=CURRENT_TIMESTAMP WHERE id=$1',[friendshipId]);
+  res.json({ok:true});
+});
+
+app.post('/api/friends/accept-by-user/:id', requireUser, async (req,res) => {
+  const targetId=Number(req.params.id);
+  const f=await db.get(`SELECT * FROM friendships WHERE requester_id=$1 AND addressee_id=$2 AND status='pending'`,[targetId,req.user.id]);
+  if(!f) return res.status(404).json({error:'Anfrage nicht gefunden'});
+  await db.run('UPDATE friendships SET status=\'accepted\',updated_at=CURRENT_TIMESTAMP WHERE id=$1',[f.id]);
+  res.json({ok:true});
+});
+app.post('/api/friends/decline-by-user/:id', requireUser, async (req,res) => {
+  const targetId=Number(req.params.id);
+  const f=await db.get(`SELECT * FROM friendships WHERE requester_id=$1 AND addressee_id=$2 AND status='pending'`,[targetId,req.user.id]);
+  if(!f) return res.status(404).json({error:'Anfrage nicht gefunden'});
+  await db.run('UPDATE friendships SET status=\'declined\',updated_at=CURRENT_TIMESTAMP WHERE id=$1',[f.id]);
+  res.json({ok:true});
+});
+app.delete('/api/friends/cancel-by-user/:id', requireUser, async (req,res) => {
+  const targetId=Number(req.params.id);
+  const f=await db.get(`SELECT id FROM friendships WHERE requester_id=$1 AND addressee_id=$2 AND status='pending'`,[req.user.id,targetId]);
+  if(!f) return res.status(404).json({error:'Gesendete Anfrage nicht gefunden'});
+  await db.run('DELETE FROM friendships WHERE id=$1',[f.id]);
+  res.json({ok:true});
+});
+
+app.delete('/api/friends/:id/request', requireUser, async (req,res) => {
+  const friendshipId=Number(req.params.id);
+  const f=await db.get('SELECT * FROM friendships WHERE id=$1 AND requester_id=$2 AND status=\'pending\'',[friendshipId,req.user.id]);
+  if(!f) return res.status(404).json({error:'Gesendete Anfrage nicht gefunden'});
+  await db.run('DELETE FROM friendships WHERE id=$1',[friendshipId]);
+  res.json({ok:true});
+});
+
+app.post('/api/friends/:id/decline', requireUser, async (req,res) => {
+  const friendshipId=Number(req.params.id);
+  const f=await db.get('SELECT * FROM friendships WHERE id=$1 AND addressee_id=$2 AND status=\'pending\'',[friendshipId,req.user.id]);
+  if(!f) return res.status(404).json({error:'Anfrage nicht gefunden'});
+  await db.run('UPDATE friendships SET status=\'declined\',updated_at=CURRENT_TIMESTAMP WHERE id=$1',[friendshipId]);
+  res.json({ok:true});
+});
+
+app.delete('/api/friends/:id', requireUser, async (req,res) => {
+  const targetId=Number(req.params.id);
+  const f=await db.get(`SELECT id FROM friendships WHERE status='accepted' AND ((requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1))`,[req.user.id,targetId]);
+  if(!f) return res.status(404).json({error:'Freundschaft nicht gefunden'});
+  await db.run('DELETE FROM friendships WHERE id=$1',[f.id]);
+  res.json({ok:true});
+});
+
+app.post('/api/friends/:id/favorite', requireUser, async (req,res) => {
+  const targetId=Number(req.params.id);
+  const f=await db.get(`SELECT * FROM friendships WHERE status='accepted' AND ((requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1))`,[req.user.id,targetId]);
+  if(!f) return res.status(404).json({error:'Freundschaft nicht gefunden'});
+  const column=f.requester_id===req.user.id?'requester_favorite':'addressee_favorite';
+  const value=req.body.favorite!==false;
+  await db.run(`UPDATE friendships SET ${column}=$1,updated_at=CURRENT_TIMESTAMP WHERE id=$2`,[value,f.id]);
+  res.json({ok:true,favorite:value});
+});
+
+app.post('/api/friends/:id/block', requireUser, async (req,res) => {
+  const targetId=Number(req.params.id);
+  if(!Number.isInteger(targetId)||targetId===req.user.id) return res.status(400).json({error:'Ungültiger Benutzer'});
+  await db.run('INSERT INTO blocks(blocker_id,blocked_id) VALUES($1,$2) ON CONFLICT(blocker_id,blocked_id) DO NOTHING',[req.user.id,targetId]);
+  await db.run(`DELETE FROM friendships WHERE (requester_id=$1 AND addressee_id=$2) OR (requester_id=$2 AND addressee_id=$1)`,[req.user.id,targetId]);
+  res.json({ok:true});
+});
+
+app.delete('/api/friends/:id/block', requireUser, async (req,res) => {
+  const targetId=Number(req.params.id);
+  await db.run('DELETE FROM blocks WHERE blocker_id=$1 AND blocked_id=$2',[req.user.id,targetId]);
+  res.json({ok:true});
 });
 
 function adminIds() {
