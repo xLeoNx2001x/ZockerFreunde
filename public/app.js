@@ -117,26 +117,44 @@ async function sendFriendRequest(id,button){id=String(id);
 async function acceptFriend(id){try{const target=friendsData.incoming.find(u=>u.id===String(id));const f=target;/* friendship id is not exposed in publicUser, use lookup helper below */await api('/api/friends/accept-by-user/'+id,{method:'POST'});await loadFriends();renderFriends();toast('Freundschaft angenommen!')}catch(e){toast('Anfrage konnte nicht angenommen werden.')}}
 async function declineFriend(id){try{await api('/api/friends/decline-by-user/'+id,{method:'POST'});await loadFriends();renderFriends();toast('Anfrage abgelehnt.')}catch(e){toast('Anfrage konnte nicht abgelehnt werden.')}}
 async function cancelFriend(id){try{await api('/api/friends/cancel-by-user/'+id,{method:'DELETE'});await loadFriends();renderFriends();toast('Anfrage zurückgezogen.')}catch(e){toast('Anfrage konnte nicht zurückgezogen werden.')}}
-async function removeFriend(id){id=String(id);
+async function removeFriend(id){
+  id=String(id);
   if(!confirm('Freund wirklich löschen?'))return;
   try{
     await api('/api/friends/'+encodeURIComponent(id),{method:'DELETE'});
+    closeFriendMenu();
     await loadFriends();
     renderMembers();
     renderFriends();
     toast('Freund gelöscht. Die 👤＋-Taste ist wieder verfügbar.');
   }catch(e){toast('Freund konnte nicht gelöscht werden.');}
 }
-async function toggleFavorite(id,current){id=String(id);
+async function toggleFavorite(id,current){
+  id=String(id);
   try{
-    const result=await api('/api/friends/'+encodeURIComponent(id)+'/favorite',{method:'POST',body:JSON.stringify({favorite:!current})});
+    const result=await api('/api/friends/'+encodeURIComponent(id)+'/favorite',{
+      method:'POST',
+      body:JSON.stringify({favorite:!current})
+    });
+    closeFriendMenu();
     await loadFriends();
+    renderMembers();
     renderFriends();
     toast(result.favorite?'Als Favorit markiert.':'Favorit entfernt.');
   }catch(e){toast('Favorit konnte nicht geändert werden.');}
 }
-async function blockFriend(id){id=String(id);if(!confirm('Diese Person blockieren? Freundschaft und offene Anfrage werden entfernt.'))return;try{await api('/api/friends/'+id+'/block',{method:'POST'});closeFriendMenu();await loadFriends();renderFriends();toast('Person blockiert.')}catch(e){toast('Blockieren fehlgeschlagen.')}}
-async function unblockFriend(id){id=String(id);try{await api('/api/friends/'+id+'/block',{method:'DELETE'});await loadFriends();renderFriends();toast('Person entsperrt.')}catch(e){toast('Entsperren fehlgeschlagen.')}}
+async function blockFriend(id){
+  id=String(id);
+  if(!confirm('Diese Person blockieren? Freundschaft und offene Anfrage werden entfernt.'))return;
+  try{
+    await api('/api/friends/'+encodeURIComponent(id)+'/block',{method:'POST'});
+    closeFriendMenu();
+    await loadFriends();
+    renderMembers();
+    renderFriends();
+    toast('Person blockiert.');
+  }catch(e){toast('Blockieren fehlgeschlagen.');}
+}
 function openFriendMenu(id){
   const sid=String(id);
   selectedFriend=members.find(u=>sameId(u.id,sid))||friendsData.friends.find(u=>sameId(u.id,sid));
