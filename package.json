@@ -1,6 +1,6 @@
 {
   "name": "zockerfreunde-community",
-  "version": "4.1.0",
+  "version": "4.1.2",
   "private": true,
   "description": "Zockerfreunde - Gaming Community Website with private community servers",
   "main": "server.js",

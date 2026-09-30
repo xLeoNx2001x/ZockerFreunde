@@ -199,6 +199,8 @@ async function initDatabase() {
       UNIQUE(message_id,user_id,option_index)
     );
     ALTER TABLE community_channels ADD COLUMN IF NOT EXISTS section_id INTEGER REFERENCES community_sections(id) ON DELETE SET NULL;
+    ALTER TABLE community_servers ADD COLUMN IF NOT EXISTS discoverable BOOLEAN NOT NULL DEFAULT FALSE;
+    CREATE INDEX IF NOT EXISTS idx_community_servers_discoverable ON community_servers (discoverable, created_at DESC);
     ALTER TABLE community_server_members ADD COLUMN IF NOT EXISTS role_id INTEGER REFERENCES community_roles(id) ON DELETE SET NULL;
     ALTER TABLE community_messages ADD COLUMN IF NOT EXISTS message_type TEXT NOT NULL DEFAULT 'text';
     ALTER TABLE community_messages ADD COLUMN IF NOT EXISTS poll_data JSONB;
@@ -316,7 +318,10 @@ async function publicUser(u) {
     discord_roles: roles, bio: u.bio, xp: u.xp, level, level_start_xp: start,
     level_next_xp: next, level_progress: Math.min(100, Math.max(0, ((u.xp - start) / (next - start)) * 100)),
     points: u.points, message_count: messageCount, games_played: u.games_played || 0, wins: u.wins || 0,
-    last_seen: u.last_seen, created_at: u.created_at
+    last_seen: u.last_seen, created_at: u.created_at,
+    community_role_name: u.community_role_name || '',
+    community_role_color: u.community_role_color || '',
+    membership_role: u.membership_role || 'member'
   };
 }
 async function getPublicUsers(rows) { return Promise.all(rows.map(publicUser)); }
@@ -386,6 +391,8 @@ app.delete('/api/chat/public', requireAdmin, async (req, res) => {
 
 app.get('/api/chat/private/:id', requireUser, async (req, res) => {
   const other = Number(req.params.id);
+  if (!Number.isInteger(other) || other <= 0 || other === Number(req.user.id)) return res.status(400).json({error:'Ungültiger Chat.'});
+  if (!(await isPrivateChatAllowed(req.user.id, other))) return res.status(403).json({error:'Private Chats sind nur mit Freunden oder alten Freunden möglich.'});
   const rows = await db.all(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM private_messages m JOIN users u ON u.id=m.sender_id WHERE (sender_id=$1 AND receiver_id=$2) OR (sender_id=$3 AND receiver_id=$4) ORDER BY m.id ASC LIMIT 200`, [req.user.id, other, other, req.user.id]);
   res.json({ messages: rows });
 });
@@ -399,6 +406,7 @@ app.post('/api/chat/private/:id', requireUser, async (req, res) => {
   if (!message) return res.status(400).json({error:'Nachricht darf nicht leer sein.'});
   const target = await db.get('SELECT id FROM users WHERE id=$1',[receiverId]);
   if (!target) return res.status(404).json({error:'Mitglied nicht gefunden'});
+  if (!(await isPrivateChatAllowed(req.user.id, Number(receiverId)))) return res.status(403).json({error:'Private Chats sind nur mit Freunden oder alten Freunden möglich.'});
   const info = await db.get(
     'INSERT INTO private_messages(sender_id,receiver_id,message) VALUES($1,$2,$3) RETURNING id',
     [req.user.id, receiverId, message]
@@ -433,6 +441,12 @@ async function relationshipBetween(a, b) {
 }
 async function isBlockedEitherWay(a,b) {
   return Boolean(await db.get('SELECT 1 FROM blocks WHERE (blocker_id=$1 AND blocked_id=$2) OR (blocker_id=$2 AND blocked_id=$1) LIMIT 1',[a,b]));
+}
+
+async function isPrivateChatAllowed(a,b) {
+  const rel = await relationshipBetween(a,b);
+  if (rel?.status === 'accepted') return true;
+  return Boolean(await db.get('SELECT 1 FROM friend_history WHERE (user_id=$1 AND other_user_id=$2) OR (user_id=$2 AND other_user_id=$1) LIMIT 1',[a,b]));
 }
 
 app.get('/api/friends', requireUser, async (req, res) => {
@@ -588,7 +602,7 @@ async function requireServerMember(req, res, next) {
     const serverId = Number(req.params.serverId || req.params.id);
     if (!Number.isInteger(serverId) || serverId <= 0) return res.status(400).json({ error: 'Ungültiger Server.' });
     const membership = await db.get(`
-      SELECT s.*, sm.role AS membership_role
+      SELECT s.*, s.discoverable, sm.role AS membership_role
       FROM community_servers s
       JOIN community_server_members sm ON sm.server_id=s.id AND sm.user_id=$1
       WHERE s.id=$2`, [req.user.id, serverId]);
@@ -611,6 +625,7 @@ async function canAccessChannel(userId, serverId, channelId) {
 
 
 const DEFAULT_MEMBER_PERMISSIONS = {send_messages:true, connect_voice:true, use_voice:true, attach_files:true, create_polls:true};
+const OWNER_ONLY_PERMISSIONS = ['manage_server','manage_channels','manage_roles','manage_members'];
 const ALL_SERVER_PERMISSIONS = {manage_server:true, manage_channels:true, manage_roles:true, manage_members:true, manage_messages:true, send_messages:true, connect_voice:true, use_voice:true, attach_files:true, create_polls:true};
 async function ensureCommunityDefaults(serverId){
   const section=await db.get('SELECT id FROM community_sections WHERE server_id=$1 ORDER BY position ASC,id ASC LIMIT 1',[serverId]);
@@ -631,13 +646,14 @@ async function ensureCommunityDefaults(serverId){
 }
 async function serverPermission(userId, serverId, permission){
   const s=await db.get('SELECT owner_id FROM community_servers WHERE id=$1',[serverId]);
-  if(!s || Number(s.owner_id)!==Number(userId)){
-    const m=await db.get(`SELECT sm.role,cr.permissions FROM community_server_members sm LEFT JOIN community_roles cr ON cr.id=sm.role_id WHERE sm.server_id=$1 AND sm.user_id=$2`,[serverId,userId]);
-    if(!m)return false;
-    const perms=m.permissions||{};
-    return Boolean(perms[permission]);
-  }
-  return true;
+  if(!s)return false;
+  const ownerOnly=new Set(['manage_server','manage_channels','manage_roles','manage_members']);
+  if(ownerOnly.has(permission)) return Number(s.owner_id)===Number(userId);
+  if(Number(s.owner_id)===Number(userId)) return true;
+  const m=await db.get(`SELECT sm.role,cr.permissions AS role_permissions FROM community_server_members sm LEFT JOIN community_roles cr ON cr.id=sm.role_id WHERE sm.server_id=$1 AND sm.user_id=$2`,[serverId,userId]);
+  if(!m)return false;
+  const perms=m.role_permissions||{};
+  return Boolean(perms[permission]);
 }
 async function requireServerPermission(req,res,next,permission){
   try{ if(await serverPermission(req.user.id,req.communityServer.id,permission)) return next(); res.status(403).json({error:'Du hast diese Berechtigung nicht.'}); }
@@ -656,7 +672,7 @@ function parseDataUrl(value){
 
 app.get('/api/servers', requireUser, async (req,res) => {
   const rows = await db.all(`
-    SELECT s.id,s.name,s.description,s.icon,s.owner_id,s.created_at,sm.role AS membership_role,
+    SELECT s.id,s.name,s.description,s.icon,s.owner_id,s.created_at,s.discoverable,sm.role AS membership_role,
       (SELECT COUNT(*)::int FROM community_server_members x WHERE x.server_id=s.id) AS member_count
     FROM community_servers s
     JOIN community_server_members sm ON sm.server_id=s.id AND sm.user_id=$1
@@ -678,6 +694,14 @@ app.post('/api/servers', requireUser, async (req,res) => {
   res.json({ok:true,server:result});
 });
 
+app.get('/api/servers/discover', requireUser, async (req,res)=>{
+  const q=clean(req.query?.q||'').slice(0,60);
+  const like=`%${q}%`;
+  const rows=await db.all(`SELECT s.id,s.name,s.description,s.icon,s.owner_id,s.created_at,(SELECT COUNT(*)::int FROM community_server_members sm2 WHERE sm2.server_id=s.id) AS member_count FROM community_servers s WHERE s.discoverable=TRUE AND (s.name ILIKE $1 OR COALESCE(s.description,'') ILIKE $1) ORDER BY member_count DESC,s.created_at DESC LIMIT 60`,[like]);
+  const joined=await db.all('SELECT server_id FROM community_server_members WHERE user_id=$1',[req.user.id]);
+  const set=new Set(joined.map(x=>Number(x.server_id)));
+  res.json({servers:rows.map(x=>({...x,joined:set.has(Number(x.id))}))});
+});
 app.get('/api/servers/:id', requireUser, async (req,res,next) => { req.params.serverId=req.params.id; next(); }, requireServerMember, async (req,res) => {
   const serverId=req.communityServer.id;
   await ensureCommunityDefaults(serverId);
@@ -690,7 +714,7 @@ app.get('/api/servers/:id', requireUser, async (req,res,next) => { req.params.se
   const canChannels=await serverPermission(req.user.id,serverId,'manage_channels');
   const canRoles=await serverPermission(req.user.id,serverId,'manage_roles');
   const canMessages=await serverPermission(req.user.id,serverId,'manage_messages');
-  res.json({server:{id:req.communityServer.id,name:req.communityServer.name,description:req.communityServer.description||'',icon:req.communityServer.icon||'',owner_id:req.communityServer.owner_id,created_at:req.communityServer.created_at,membership_role:req.communityServer.membership_role},channels,sections,roles,members:await getPublicUsers(members),membersMeta:members.map(m=>({id:m.id,role_id:m.role_id,community_role_name:m.community_role_name,community_role_color:m.community_role_color,membership_role:m.membership_role})),invites,permissions:{manage_server:canManage,manage_channels:canChannels,manage_roles:canRoles,manage_members:await serverPermission(req.user.id,serverId,'manage_members'),manage_messages:canMessages,send_messages:await serverPermission(req.user.id,serverId,'send_messages'),attach_files:await serverPermission(req.user.id,serverId,'attach_files'),create_polls:await serverPermission(req.user.id,serverId,'create_polls'),connect_voice:await serverPermission(req.user.id,serverId,'connect_voice')}});
+  res.json({server:{id:req.communityServer.id,name:req.communityServer.name,description:req.communityServer.description||'',icon:req.communityServer.icon||'',owner_id:req.communityServer.owner_id,created_at:req.communityServer.created_at,membership_role:req.communityServer.membership_role,discoverable:Boolean(req.communityServer.discoverable)},channels,sections,roles,members:await getPublicUsers(members),membersMeta:members.map(m=>({id:m.id,role_id:m.role_id,community_role_name:m.community_role_name,community_role_color:m.community_role_color,membership_role:m.membership_role})),invites,permissions:{manage_server:canManage,manage_channels:canChannels,manage_roles:canRoles,manage_members:await serverPermission(req.user.id,serverId,'manage_members'),manage_messages:canMessages,send_messages:await serverPermission(req.user.id,serverId,'send_messages'),attach_files:await serverPermission(req.user.id,serverId,'attach_files'),create_polls:await serverPermission(req.user.id,serverId,'create_polls'),connect_voice:await serverPermission(req.user.id,serverId,'connect_voice')}});
 });
 
 app.patch('/api/servers/:serverId', requireUser, requireServerMember, async (req,res) => {
@@ -699,7 +723,8 @@ app.patch('/api/servers/:serverId', requireUser, requireServerMember, async (req
   if(name.length<2)return res.status(400).json({error:'Der Servername muss mindestens 2 Zeichen haben.'});
   const description=clean(req.body?.description||'').slice(0,240);
   const icon=clean(req.body?.icon||'').slice(0,400);
-  const s=await db.get('UPDATE community_servers SET name=$1,description=$2,icon=$3 WHERE id=$4 RETURNING id,name,description,icon,owner_id,created_at',[name,description,icon,req.communityServer.id]);
+  const discoverable=Boolean(req.body?.discoverable);
+  const s=await db.get('UPDATE community_servers SET name=$1,description=$2,icon=$3,discoverable=$4 WHERE id=$5 RETURNING id,name,description,icon,owner_id,created_at,discoverable',[name,description,icon,discoverable,req.communityServer.id]);
   res.json({ok:true,server:s});
 });
 app.delete('/api/servers/:serverId', requireUser, requireServerMember, async (req,res) => {
@@ -735,6 +760,8 @@ app.post('/api/servers/:serverId/channels', requireUser, requireServerMember, as
   if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_channels'))) return res.status(403).json({error:'Keine Berechtigung.'});
   const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32); const type=req.body?.type==='voice'?'voice':'text'; if(!name)return res.status(400).json({error:'Kanalname fehlt.'});
   const sectionId=Number(req.body?.sectionId)|| (await ensureCommunityDefaults(req.communityServer.id)).sectionId;
+  const validSection=await db.get('SELECT id FROM community_sections WHERE id=$1 AND server_id=$2',[sectionId,req.communityServer.id]);
+  if(!validSection)return res.status(400).json({error:'Ungültiger Abschnitt.'});
   const max=await db.get('SELECT COALESCE(MAX(position),-1)+1 AS p FROM community_channels WHERE server_id=$1',[req.communityServer.id]);
   const c=await db.get('INSERT INTO community_channels(server_id,name,type,position,section_id) VALUES($1,$2,$3,$4,$5) RETURNING id,name,type,position,section_id',[req.communityServer.id,name,type,max.p,sectionId]);
   res.json({ok:true,channel:c});
@@ -743,6 +770,7 @@ app.patch('/api/servers/:serverId/channels/:channelId', requireUser, requireServ
   if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_channels'))) return res.status(403).json({error:'Keine Berechtigung.'});
   const id=Number(req.params.channelId); const c=await db.get('SELECT id,name,type FROM community_channels WHERE id=$1 AND server_id=$2',[id,req.communityServer.id]); if(!c)return res.status(404).json({error:'Kanal nicht gefunden.'});
   const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32)||c.name; const sectionId=Number(req.body?.sectionId)||null;
+  if(sectionId){const validSection=await db.get('SELECT id FROM community_sections WHERE id=$1 AND server_id=$2',[sectionId,req.communityServer.id]);if(!validSection)return res.status(400).json({error:'Ungültiger Abschnitt.'});}
   const updated=await db.get('UPDATE community_channels SET name=$1,section_id=$2 WHERE id=$3 AND server_id=$4 RETURNING id,name,type,position,section_id',[name,sectionId,id,req.communityServer.id]); res.json({ok:true,channel:updated});
 });
 app.delete('/api/servers/:serverId/channels/:channelId', requireUser, requireServerMember, async (req,res) => {
@@ -756,14 +784,14 @@ app.post('/api/servers/:serverId/roles', requireUser, requireServerMember, async
   if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_roles')))return res.status(403).json({error:'Keine Berechtigung.'});
   const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32); if(!name)return res.status(400).json({error:'Rollenname fehlt.'});
   const color=/^#[0-9a-fA-F]{6}$/.test(String(req.body?.color||''))?String(req.body.color):'#8b93ad';
-  const permissions=typeof req.body?.permissions==='object'&&req.body.permissions?req.body.permissions:{};
+  const permissions=typeof req.body?.permissions==='object'&&req.body.permissions?{...req.body.permissions}:{}; OWNER_ONLY_PERMISSIONS.forEach(k=>delete permissions[k]);
   const max=await db.get('SELECT COALESCE(MAX(position),0)+1 AS p FROM community_roles WHERE server_id=$1',[req.communityServer.id]);
   const role=await db.get('INSERT INTO community_roles(server_id,name,color,permissions,position) VALUES($1,$2,$3,$4::jsonb,$5) RETURNING id,name,color,permissions,position',[req.communityServer.id,name,color,JSON.stringify(permissions),max.p]); res.json({ok:true,role});
 });
 app.patch('/api/servers/:serverId/roles/:roleId', requireUser, requireServerMember, async (req,res)=>{
   if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_roles')))return res.status(403).json({error:'Keine Berechtigung.'});
   const id=Number(req.params.roleId); const old=await db.get('SELECT * FROM community_roles WHERE id=$1 AND server_id=$2',[id,req.communityServer.id]); if(!old)return res.status(404).json({error:'Rolle nicht gefunden.'});
-  const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32)||old.name; const color=/^#[0-9a-fA-F]{6}$/.test(String(req.body?.color||''))?String(req.body.color):old.color; const permissions=typeof req.body?.permissions==='object'&&req.body.permissions?req.body.permissions:old.permissions;
+  const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32)||old.name; const color=/^#[0-9a-fA-F]{6}$/.test(String(req.body?.color||''))?String(req.body.color):old.color; const permissions=typeof req.body?.permissions==='object'&&req.body.permissions?{...req.body.permissions}:{...(old.permissions||{})}; OWNER_ONLY_PERMISSIONS.forEach(k=>delete permissions[k]);
   const role=await db.get('UPDATE community_roles SET name=$1,color=$2,permissions=$3::jsonb WHERE id=$4 AND server_id=$5 RETURNING id,name,color,permissions,position',[name,color,JSON.stringify(permissions),id,req.communityServer.id]); res.json({ok:true,role});
 });
 app.delete('/api/servers/:serverId/roles/:roleId', requireUser, requireServerMember, async (req,res)=>{ if(!(await serverPermission(req.user.id,req.communityServer.id,'manage_roles')))return res.status(403).json({error:'Keine Berechtigung.'}); const id=Number(req.params.roleId); await db.run('UPDATE community_server_members SET role_id=NULL WHERE server_id=$1 AND role_id=$2',[req.communityServer.id,id]); await db.run('DELETE FROM community_roles WHERE id=$1 AND server_id=$2',[id,req.communityServer.id]); await ensureCommunityDefaults(req.communityServer.id); res.json({ok:true}); });
@@ -848,6 +876,12 @@ app.post('/api/servers/:serverId/channels/:channelId/messages/:messageId/poll-vo
   res.json({ok:true,...payload});
 });
 
+app.patch('/api/servers/:serverId/discoverability', requireUser, requireServerMember, async (req,res)=>{
+  if(Number(req.communityServer.owner_id)!==Number(req.user.id)) return res.status(403).json({error:'Nur der Serverbesitzer kann die Auffindbarkeit ändern.'});
+  const value=Boolean(req.body?.discoverable);
+  const r=await db.get('UPDATE community_servers SET discoverable=$1 WHERE id=$2 RETURNING id,name,discoverable',[value,req.communityServer.id]);
+  res.json({ok:true,server:r});
+});
 app.post('/api/servers/:serverId/invites', requireUser, requireServerMember, async (req,res) => {
   const code=inviteCode();
   const expiresHours=Number(req.body?.expiresHours);
@@ -1103,6 +1137,7 @@ io.on('connection', socket => {
       const receiverId = Number(data?.receiverId); const message = clean(data?.message).slice(0, 1000);
       if (!receiverId || !message || receiverId === Number(socket.user.id)) return;
       const target = await db.get('SELECT id FROM users WHERE id=$1', [receiverId]); if (!target) return;
+      if (!(await isPrivateChatAllowed(socket.user.id, receiverId))) { socket.emit('private_message_error',{error:'Private Chats sind nur mit Freunden oder alten Freunden möglich.'}); return; }
       const info = await db.get('INSERT INTO private_messages(sender_id,receiver_id,message) VALUES($1,$2,$3) RETURNING id', [socket.user.id, receiverId, message]);
       const row = await db.get(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM private_messages m JOIN users u ON u.id=m.sender_id WHERE m.id=$1`, [info.id]);
       for (const [, s] of io.sockets.sockets) if (s?.user && (String(s.user.id) === receiverId || Number(s.user.id) === Number(socket.user.id))) s.emit('private_message', row);
