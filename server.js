@@ -240,6 +240,21 @@ async function initDatabase() {
 }
 
 const app = express();
+const chatCooldowns = new Map();
+const CHAT_COOLDOWN_MS = 5000;
+function enforceChatCooldown(userId) {
+  const key = String(userId);
+  const now = Date.now();
+  const last = chatCooldowns.get(key) || 0;
+  const remaining = CHAT_COOLDOWN_MS - (now - last);
+  if (remaining > 0) return Math.ceil(remaining / 1000);
+  chatCooldowns.set(key, now);
+  if (chatCooldowns.size > 5000) {
+    for (const [id, stamp] of chatCooldowns) if (now - stamp > CHAT_COOLDOWN_MS * 2) chatCooldowns.delete(id);
+  }
+  return 0;
+}
+
 const server = http.createServer(app);
 const io = new Server(server, { cors: { origin: true, credentials: true } });
 const PORT = Number(process.env.PORT || 10000);
@@ -356,7 +371,8 @@ app.use(express.static(path.join(__dirname, 'public'), {
   immutable: false,
   setHeaders(res, filePath) {
     if (filePath.endsWith('.png') || filePath.endsWith('.jpg') || filePath.endsWith('.webp') || filePath.endsWith('.svg') || filePath.endsWith('.ico')) {
-      res.setHeader('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400');
+      if (path.extname(filePath).toLowerCase() === '.html') res.setHeader('Cache-Control', 'no-cache, no-store, must-revalidate');
+      else res.setHeader('Cache-Control', 'public, max-age=86400, stale-while-revalidate=604800');
     }
   }
 }));
@@ -421,6 +437,8 @@ app.get('/api/chat/private/:id', requireUser, async (req, res) => {
 });
 
 app.post('/api/chat/private/:id', requireUser, async (req, res) => {
+  const cooldown = enforceChatCooldown(req.user.id);
+  if (cooldown) return res.status(429).json({error:`Bitte warte noch ${cooldown} Sekunden.`,retryAfter:cooldown});
   const receiverId = String(req.params.id);
   const message = clean(req.body?.message).slice(0, 1000);
   if (!/^\d+$/.test(receiverId) || receiverId === String(req.user.id)) {
@@ -848,6 +866,8 @@ app.get('/api/servers/:serverId/channels/:channelId/messages', requireUser, requ
   res.json({messages:rows.reverse()});
 });
 app.post('/api/servers/:serverId/channels/:channelId/messages', requireUser, requireServerMember, async (req,res) => {
+  const cooldown = enforceChatCooldown(req.user.id);
+  if (cooldown) return res.status(429).json({error:`Bitte warte noch ${cooldown} Sekunden.`,retryAfter:cooldown});
   const channelId=Number(req.params.channelId); if(!(await canAccessChannel(req.user.id,req.communityServer.id,channelId)))return res.status(404).json({error:'Kanal nicht gefunden.'});
   const channel=await db.get('SELECT type FROM community_channels WHERE id=$1 AND server_id=$2',[channelId,req.communityServer.id]); if(channel?.type!=='text')return res.status(400).json({error:'In einem Sprachkanal kann nicht geschrieben werden.'});
   if(!(await serverPermission(req.user.id,req.communityServer.id,'send_messages')))return res.status(403).json({error:'Du darfst hier nicht schreiben.'});
@@ -1119,6 +1139,8 @@ io.on('connection', socket => {
   socket.on('public_message', async data => {
     try {
       if (!socket.user) return;
+      const cooldown = enforceChatCooldown(socket.user.id);
+      if (cooldown) { socket.emit('public_message_error', {error:`Bitte warte noch ${cooldown} Sekunden.`, retryAfter:cooldown}); return; }
       const message = clean(data?.message).slice(0, 1000); if (!message) return;
       const info = await db.get('INSERT INTO public_messages(user_id,message) VALUES($1,$2) RETURNING id', [socket.user.id, message]);
       const row = await db.get(`SELECT m.*,u.username,u.global_name,u.avatar,u.role FROM public_messages m JOIN users u ON u.id=m.user_id WHERE m.id=$1`, [info.id]);
