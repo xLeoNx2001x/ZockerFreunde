@@ -148,6 +148,21 @@ async function toggleFavorite(id,current){
     toast(result.favorite?'Als Favorit markiert.':'Favorit entfernt.');
   }catch(e){toast('Favorit konnte nicht geändert werden.');}
 }
+async function unblockFriend(id){
+  id=String(id);
+  try{
+    const target=friendsData.blocked.find(u=>sameId(u.id,id));
+    await api('/api/friends/'+encodeURIComponent(id)+'/block',{method:'DELETE'});
+    await loadFriends();
+    renderMembers();
+    renderFriends();
+    toast(`${target?(target.global_name||target.username):'Mitglied'} wurde entsperrt.`);
+  }catch(e){
+    let msg='Entsperren fehlgeschlagen.';
+    try{const d=JSON.parse(String(e.message||''));if(d.error)msg=d.error;}catch{}
+    toast(msg);
+  }
+}
 async function blockFriend(id){
   id=String(id);
   if(!confirm('Diese Person blockieren? Freundschaft und offene Anfrage werden entfernt.'))return;
