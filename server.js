@@ -225,6 +225,9 @@ async function initDatabase() {
     );
     ALTER TABLE community_servers ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
     ALTER TABLE community_servers ADD COLUMN IF NOT EXISTS icon TEXT NOT NULL DEFAULT '';
+    ALTER TABLE community_servers ADD COLUMN IF NOT EXISTS chat_bg TEXT NOT NULL DEFAULT '#0b1020';
+    ALTER TABLE community_servers ADD COLUMN IF NOT EXISTS chat_text TEXT NOT NULL DEFAULT '#f4f7ff';
+    ALTER TABLE community_servers ADD COLUMN IF NOT EXISTS chat_bubble TEXT NOT NULL DEFAULT '#171e33';
     ALTER TABLE community_messages ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ;
     ALTER TABLE community_messages ADD COLUMN IF NOT EXISTS pinned BOOLEAN NOT NULL DEFAULT FALSE;
     CREATE INDEX IF NOT EXISTS idx_notifications_user ON notifications (user_id, read, id DESC);
@@ -685,7 +688,7 @@ app.post('/api/servers', requireUser, async (req,res) => {
   if(name.length<2) return res.status(400).json({error:'Der Servername muss mindestens 2 Zeichen haben.'});
   const description=clean(req.body?.description||'').slice(0,240);
   const icon=clean(req.body?.icon||'').slice(0,400);
-  const result=await db.get('INSERT INTO community_servers(owner_id,name,description,icon) VALUES($1,$2,$3,$4) RETURNING *',[req.user.id,name,description,icon]);
+  const result=await db.get("INSERT INTO community_servers(owner_id,name,description,icon,chat_bg,chat_text,chat_bubble) VALUES($1,$2,$3,$4,'#0b1020','#f4f7ff','#171e33') RETURNING *",[req.user.id,name,description,icon]);
   await db.run("INSERT INTO community_server_members(server_id,user_id,role) VALUES($1,$2,'owner')",[result.id,req.user.id]);
   await db.run("INSERT INTO community_sections(server_id,name,position) VALUES($1,'Allgemein',0)",[result.id]);
   const sec=await db.get('SELECT id FROM community_sections WHERE server_id=$1 ORDER BY id DESC LIMIT 1',[result.id]);
@@ -714,7 +717,7 @@ app.get('/api/servers/:id', requireUser, async (req,res,next) => { req.params.se
   const canChannels=await serverPermission(req.user.id,serverId,'manage_channels');
   const canRoles=await serverPermission(req.user.id,serverId,'manage_roles');
   const canMessages=await serverPermission(req.user.id,serverId,'manage_messages');
-  res.json({server:{id:req.communityServer.id,name:req.communityServer.name,description:req.communityServer.description||'',icon:req.communityServer.icon||'',owner_id:req.communityServer.owner_id,created_at:req.communityServer.created_at,membership_role:req.communityServer.membership_role,discoverable:Boolean(req.communityServer.discoverable)},channels,sections,roles,members:await getPublicUsers(members),membersMeta:members.map(m=>({id:m.id,role_id:m.role_id,community_role_name:m.community_role_name,community_role_color:m.community_role_color,membership_role:m.membership_role})),invites,permissions:{manage_server:canManage,manage_channels:canChannels,manage_roles:canRoles,manage_members:await serverPermission(req.user.id,serverId,'manage_members'),manage_messages:canMessages,send_messages:await serverPermission(req.user.id,serverId,'send_messages'),attach_files:await serverPermission(req.user.id,serverId,'attach_files'),create_polls:await serverPermission(req.user.id,serverId,'create_polls'),connect_voice:await serverPermission(req.user.id,serverId,'connect_voice')}});
+  res.json({server:{id:req.communityServer.id,name:req.communityServer.name,description:req.communityServer.description||'',icon:req.communityServer.icon||'',owner_id:req.communityServer.owner_id,created_at:req.communityServer.created_at,membership_role:req.communityServer.membership_role,discoverable:Boolean(req.communityServer.discoverable),chat_bg:req.communityServer.chat_bg||'#0b1020',chat_text:req.communityServer.chat_text||'#f4f7ff',chat_bubble:req.communityServer.chat_bubble||'#171e33'},channels,sections,roles,members:await getPublicUsers(members),membersMeta:members.map(m=>({id:m.id,role_id:m.role_id,community_role_name:m.community_role_name,community_role_color:m.community_role_color,membership_role:m.membership_role})),invites,permissions:{manage_server:canManage,manage_channels:canChannels,manage_roles:canRoles,manage_members:await serverPermission(req.user.id,serverId,'manage_members'),manage_messages:canMessages,send_messages:await serverPermission(req.user.id,serverId,'send_messages'),attach_files:await serverPermission(req.user.id,serverId,'attach_files'),create_polls:await serverPermission(req.user.id,serverId,'create_polls'),connect_voice:await serverPermission(req.user.id,serverId,'connect_voice')}});
 });
 
 app.patch('/api/servers/:serverId', requireUser, requireServerMember, async (req,res) => {
@@ -724,7 +727,11 @@ app.patch('/api/servers/:serverId', requireUser, requireServerMember, async (req
   const description=clean(req.body?.description||'').slice(0,240);
   const icon=clean(req.body?.icon||'').slice(0,400);
   const discoverable=Boolean(req.body?.discoverable);
-  const s=await db.get('UPDATE community_servers SET name=$1,description=$2,icon=$3,discoverable=$4 WHERE id=$5 RETURNING id,name,description,icon,owner_id,created_at,discoverable',[name,description,icon,discoverable,req.communityServer.id]);
+  const validColor=v=>/^#[0-9a-fA-F]{6}$/.test(String(v||''));
+  const chatBg=validColor(req.body?.chatBg)?String(req.body.chatBg):String(req.communityServer.chat_bg||'#0b1020');
+  const chatText=validColor(req.body?.chatText)?String(req.body.chatText):String(req.communityServer.chat_text||'#f4f7ff');
+  const chatBubble=validColor(req.body?.chatBubble)?String(req.body.chatBubble):String(req.communityServer.chat_bubble||'#171e33');
+  const s=await db.get('UPDATE community_servers SET name=$1,description=$2,icon=$3,discoverable=$4,chat_bg=$5,chat_text=$6,chat_bubble=$7 WHERE id=$8 RETURNING id,name,description,icon,owner_id,created_at,discoverable,chat_bg,chat_text,chat_bubble',[name,description,icon,discoverable,chatBg,chatText,chatBubble,req.communityServer.id]);
   res.json({ok:true,server:s});
 });
 app.delete('/api/servers/:serverId', requireUser, requireServerMember, async (req,res) => {

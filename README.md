@@ -1,5 +1,5 @@
-# ZockerFreunde 4.1.2 — Server UI Redesign
+# ZockerFreunde 4.2 – Server UI Overhaul
 
-Diese Version baut auf 4.1.0 auf. Der Serverbereich wurde optisch neu aufgebaut: größere Arbeitsfläche, Server-Aktionsbuttons, Kanal-Sidebar, Mitgliederspalte nach Community-Rollen und ein separates Server-Entdecken-Fenster.
+Enthält den neuen Server-Bereich mit In-App-GUIs, Serverwechsel, Kanalverwaltung inklusive Löschen, Voice-Lobby mit explizitem Beitreten, Rollenverwaltung, Server-Entdeckung sowie Owner-gesteuertem Chat-Theme (Hintergrund, Schrift und Speech-Bubble).
 
-Private Server bleiben nicht auffindbar. Ein Server kann vom Besitzer für „Entdecken“ freigeschaltet werden; der Beitritt bleibt weiterhin einladungsbasiert. Server-, Kanal- und Rollenverwaltung ist serverseitig auf den Besitzer begrenzt.
+Wichtig: Die Server-GUIs verwenden keine Browser-Prompts für Serveraktionen.
