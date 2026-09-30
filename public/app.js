@@ -1,8 +1,8 @@
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
-let me=null,members=[],socket=null,currentPrivate=null,config={},friendsData={friends:[],sent:[],incoming:[],blocked:[]},selectedFriend=null;
-const pages={home:'Startseite',members:'Mitglieder',friends:'Freunde',chat:'Öffentlicher Chat',private:'Private Chats',leaderboard:'Rangliste',settings:'Einstellungen'};
-const protectedPages=new Set(['members','friends','chat','private','leaderboard','settings']);
-const pageThemes={home:'theme-home',members:'theme-members',friends:'theme-members',chat:'theme-chat',private:'theme-private',leaderboard:'theme-leaderboard',settings:'theme-settings'};
+let me=null,members=[],socket=null,currentPrivate=null,config={},friendsData={friends:[],sent:[],incoming:[],blocked:[]},selectedFriend=null,communityServers=[],currentCommunityServer=null,currentCommunityData=null,currentCommunityChannel=null,currentVoiceChannel=null,voiceLocalStream=null,voicePeers=new Map();
+const pages={home:'Startseite',members:'Mitglieder',friends:'Freunde',chat:'Öffentlicher Chat',private:'Private Chats',leaderboard:'Rangliste',servers:'Server',settings:'Einstellungen'};
+const protectedPages=new Set(['members','friends','chat','private','leaderboard','servers','settings']);
+const pageThemes={home:'theme-home',members:'theme-members',friends:'theme-members',chat:'theme-chat',private:'theme-private',leaderboard:'theme-leaderboard',servers:'theme-servers',settings:'theme-settings'};
 function setPageTheme(page){document.body.classList.remove(...Object.values(pageThemes));document.body.classList.add(pageThemes[page]||pageThemes.home);}
 function showLoginGate(){const e=$('#loginGate');if(!e)return;e.classList.add('show');e.setAttribute('aria-hidden','false');}
 function closeLoginGate(){const e=$('#loginGate');if(!e)return;e.classList.remove('show');e.setAttribute('aria-hidden','true');}
@@ -62,7 +62,7 @@ async function load(){
   const m=await api('/api/members');members=m.members;
   if(me){try{friendsData=await api('/api/friends')}catch{friendsData={friends:[],sent:[],incoming:[],blocked:[]};}}
   if(me){checkStoredLevel(me);members=members.map(u=>sameId(u.id,me.id)?{...u,last_seen:new Date().toISOString()}:u);me=members.find(u=>sameId(u.id,me.id))||me;}
-  renderTop();renderHome();connectSocket();
+  renderTop();renderHome();try{await loadCommunityServers();}catch{}renderServers();connectSocket();
 }
 function renderTop(){ $('#topUser').innerHTML=me?`<div class="user-mini"><i class="dot online"></i><img class="avatar" src="${esc(avatar(me))}"><b>${esc(me.global_name||me.username)}</b></div>`:`<a class="primary" href="/auth/discord">Mit Discord anmelden</a>`; }
 function renderHome(){const online=members.filter(isOnline).length;$('#page-home').innerHTML=`<div class="hero"><div class="eyebrow">DEINE GAMING COMMUNITY</div><h1>Gemeinsam spielen.<br><span class="gradient">Gemeinsam zocken.</span></h1><p>Zockerfreunde verbindet Gaming, Freunde und Community an einem Ort. Chatte, finde deine Freunde und sammle XP für die Community-Rangliste.</p><div class="actions">${me?`<button class="primary" onclick="go('chat')">Zum Community-Chat →</button>`:`<a class="primary" href="/auth/discord">Mit Discord starten →</a>`}<button class="secondary" onclick="go('leaderboard')">🏆 Rangliste ansehen</button></div></div><div class="stats"><div class="stat"><strong>${members.length}</strong><span>Mitglieder</span></div><div class="stat"><strong>${online}</strong><span>Gerade online</span></div><div class="stat"><strong>${members.reduce((a,b)=>a+b.points,0)}</strong><span>Community-Punkte</span></div><div class="stat"><strong>∞</strong><span>Gemeinsame Momente</span></div></div><div class="section-title"><h2>Aktive Mitglieder</h2><button class="secondary" onclick="go('members')">Alle ansehen</button></div><div class="grid">${members.filter(isOnline).slice(0,4).map(memberCard).join('')||'<div class="empty">Noch niemand online.</div>'}</div>`}
@@ -248,6 +248,112 @@ async function openPrivate(){if(!currentPrivate)return;const p=$('#privatePanel'
   finally{if(send)send.disabled=false;}
 };const d=await api('/api/chat/private/'+currentPrivate.id);$('#privateMessages').innerHTML=d.messages.map(messageHTML).join('');scrollPrivate();}
 function scrollPrivate(){const e=$('#privateMessages');if(e)e.scrollTop=e.scrollHeight}
+
+async function loadCommunityServers(){
+  if(!me)return;
+  const d=await api('/api/servers');
+  communityServers=d.servers||[];
+  if(currentCommunityServer && !communityServers.some(s=>sameId(s.id,currentCommunityServer.id))) currentCommunityServer=null;
+  if(!currentCommunityServer && communityServers.length) currentCommunityServer=communityServers[0];
+}
+function serverInviteUrl(code){return `${location.origin}/?invite=${encodeURIComponent(code)}`}
+async function openCommunityServer(id){
+  try{
+    const d=await api('/api/servers/'+encodeURIComponent(id));
+    currentCommunityServer=d.server; currentCommunityData=d; currentCommunityChannel=d.channels.find(c=>c.type==='text')||d.channels[0]||null;
+    renderServers();
+    if(currentCommunityChannel) await openCommunityChannel(currentCommunityChannel.id);
+  }catch(e){toast('Server konnte nicht geladen werden.');}
+}
+function serverCard(s){return `<button type="button" class="server-entry ${sameId(currentCommunityServer?.id,s.id)?'active':''}" data-community-server="${esc(String(s.id))}"><span class="server-entry-dot">${esc((s.name||'?').slice(0,1).toUpperCase())}</span><span><b>${esc(s.name)}</b><small>${Number(s.member_count||0)} Mitglieder</small></span></button>`}
+function renderServers(){
+  if(!me){$('#page-servers').innerHTML='<div class="empty">Bitte melde dich mit Discord an.</div>';return;}
+  const s=currentCommunityData?.server;
+  const channels=currentCommunityData?.channels||[];
+  $('#page-servers').innerHTML=`<div class="section-title"><div><h2>🖥 Server</h2><div class="eyebrow">DEINE PRIVATEN COMMUNITY-SERVER</div></div><div class="actions"><button class="secondary" id="joinCommunityInvite">🔗 Einladung beitreten</button><button class="primary" id="createCommunityServer">＋ Server erstellen</button></div></div>
+  <div class="server-layout"><aside class="card server-list"><div class="server-list-title"><b>Meine Server</b><span>${communityServers.length}</span></div><div id="communityServerEntries">${communityServers.map(serverCard).join('')||'<div class="empty compact">Noch kein Server.<br>Erstelle deinen ersten.</div>'}</div></aside>
+  <section class="card server-main">${s?`<div class="server-main-head"><div><h2>${esc(s.name)}</h2><p>Nur Servermitglieder können diesen Bereich sehen.</p></div><div class="actions"><button class="secondary" id="inviteCommunityServer">＋ Einladen</button>${s.owner_id===me.id?'<button class="secondary" id="addCommunityChannel">＋ Kanal</button>':''}</div></div>
+    <div class="server-grid"><div class="server-channels"><div class="server-channel-group"><span>TEXTKANÄLE</span>${channels.filter(c=>c.type==='text').map(c=>`<button class="channel-entry ${sameId(currentCommunityChannel?.id,c.id)?'active':''}" data-channel-id="${c.id}"># ${esc(c.name)}</button>`).join('')||'<div class="empty compact">Keine Textkanäle</div>'}</div><div class="server-channel-group"><span>SPRACHKANÄLE</span>${channels.filter(c=>c.type==='voice').map(c=>`<button class="channel-entry voice ${sameId(currentVoiceChannel?.id,c.id)?'active':''}" data-voice-id="${c.id}">🔊 ${esc(c.name)}</button>`).join('')||'<div class="empty compact">Keine Sprachkanäle</div>'}</div><div class="server-members-mini"><span>MITGLIEDER · ${currentCommunityData.members?.length||0}</span>${(currentCommunityData.members||[]).slice(0,12).map(u=>`<div><i class="dot ${isOnline(u)?'online':''}"></i><img class="avatar" src="${esc(avatar(u))}"><span>${esc(u.global_name||u.username)}</span></div>`).join('')}</div></div><div id="serverChannelView" class="server-channel-view">${currentCommunityChannel?'<div class="empty">Lade Kanal …</div>':'<div class="empty">Wähle einen Kanal.</div>'}</div></div>`:'<div class="server-empty-state"><div class="server-empty-icon">🖥</div><h2>Deine privaten Server</h2><p>Erstelle einen Server oder tritt über eine Einladung bei. Nicht eingeladene Mitglieder sehen ihn nicht in ihrer Liste.</p></div>'}</section></div>`;
+  $$('#communityServerEntries .server-entry').forEach(b=>b.onclick=()=>openCommunityServer(Number(b.dataset.communityServer)));
+  $('#createCommunityServer')?.addEventListener('click',createCommunityServer);
+  $('#joinCommunityInvite')?.addEventListener('click',joinCommunityInvite);
+  $('#inviteCommunityServer')?.addEventListener('click',createCommunityInvite);
+  $('#addCommunityChannel')?.addEventListener('click',createCommunityChannel);
+  $$('#page-servers [data-channel-id]').forEach(b=>b.onclick=()=>openCommunityChannel(Number(b.dataset.channelId)));
+  $$('#page-servers [data-voice-id]').forEach(b=>b.onclick=()=>joinCommunityVoice(Number(b.dataset.voiceId)));
+}
+async function createCommunityServer(){
+  const name=prompt('Wie soll dein Server heißen?','Mein Zockerfreunde-Server');
+  if(name===null)return;
+  try{const d=await api('/api/servers',{method:'POST',body:JSON.stringify({name})});toast(`Server „${d.server.name}“ erstellt!`);await loadCommunityServers();await openCommunityServer(d.server.id);}catch(e){let msg='Server konnte nicht erstellt werden.';try{const d=JSON.parse(e.message);if(d.error)msg=d.error}catch{}toast(msg)}
+}
+async function joinCommunityInvite(){
+  const invite=prompt('Einladungslink oder Einladungscode eingeben:');
+  if(invite===null)return;
+  try{const d=await api('/api/invites/join',{method:'POST',body:JSON.stringify({invite})});toast(d.alreadyMember?`Du bist bereits auf „${d.serverName}“.`:`Du bist „${d.serverName}“ beigetreten!`);await loadCommunityServers();await openCommunityServer(d.serverId);}catch(e){let msg='Einladung konnte nicht angenommen werden.';try{const d=JSON.parse(e.message);if(d.error)msg=d.error}catch{}toast(msg)}
+}
+async function createCommunityInvite(){
+  if(!currentCommunityServer)return;
+  try{const d=await api('/api/servers/'+currentCommunityServer.id+'/invites',{method:'POST',body:JSON.stringify({})});const link=serverInviteUrl(d.invite.code);try{await navigator.clipboard.writeText(link);toast('Einladungslink kopiert!');}catch{prompt('Einladungslink',link);}}catch{toast('Einladung konnte nicht erstellt werden.')}
+}
+async function createCommunityChannel(){
+  if(!currentCommunityServer)return;
+  const name=prompt('Kanalname:','neuer-kanal'); if(name===null)return;
+  const type=prompt('Typ eingeben: text oder voice','text'); if(type===null)return;
+  try{await api('/api/servers/'+currentCommunityServer.id+'/channels',{method:'POST',body:JSON.stringify({name,type})});toast('Kanal erstellt.');await openCommunityServer(currentCommunityServer.id);}catch(e){let msg='Kanal konnte nicht erstellt werden.';try{const d=JSON.parse(e.message);if(d.error)msg=d.error}catch{}toast(msg)}
+}
+async function openCommunityChannel(id){
+  const c=(currentCommunityData?.channels||[]).find(x=>sameId(x.id,id)); if(!c)return;
+  if(currentVoiceChannel) await leaveCommunityVoice();
+  currentCommunityChannel=c;
+  socket?.emit('server_channel_watch',{serverId:currentCommunityServer.id,channelId:c.id});
+  $$('#page-servers [data-channel-id]').forEach(b=>b.classList.toggle('active',sameId(b.dataset.channelId,c.id)));
+  if(c.type!=='text')return;
+  const view=$('#serverChannelView'); if(!view)return;
+  view.innerHTML=`<div class="server-chat-head"><div><h3># ${esc(c.name)}</h3><small>Privater Textkanal</small></div></div><div id="serverMessages" class="messages"></div><form id="serverMessageForm" class="composer"><input id="serverMessageInput" maxlength="1000" placeholder="# ${esc(c.name)} schreiben …"><button class="primary">Senden</button></form>`;
+  try{const d=await api(`/api/servers/${currentCommunityServer.id}/channels/${c.id}/messages`);const e=$('#serverMessages');if(e)e.innerHTML=d.messages.map(m=>communityMessageHTML(m)).join('');scrollCommunityMessages();}catch{toast('Kanal konnte nicht geladen werden.');}
+  $('#serverMessageForm').onsubmit=async e=>{e.preventDefault();const i=$('#serverMessageInput');const text=i.value.trim();if(!text)return;try{await api(`/api/servers/${currentCommunityServer.id}/channels/${c.id}/messages`,{method:'POST',body:JSON.stringify({message:text})});i.value='';}catch{toast('Nachricht konnte nicht gesendet werden.')}};
+}
+function communityMessageHTML(m){return `<div class="msg ${me&&sameId(m.user_id,me.id)?'me':''}"><img class="avatar" src="${esc(avatar(m))}"><div><div class="meta">${esc(m.global_name||m.username)} · ${esc(m.role||'Mitglied')}</div><div class="bubble">${esc(m.message)}</div></div></div>`}
+function scrollCommunityMessages(){const e=$('#serverMessages');if(e)e.scrollTop=e.scrollHeight}
+function updateVoiceMemberList(){const host=$('#voiceStatusList');if(!host)return;const names=[];if(me&&currentVoiceChannel&&voiceLocalStream)names.push(`<div class="voice-member"><i class="dot online"></i><span>${esc(me.global_name||me.username)} <small>Du</small></span></div>`);for(const [id,p] of voicePeers)names.push(`<div class="voice-member"><i class="dot online"></i><span>${esc(p.user?.global_name||p.user?.username||'Mitglied')}</span></div>`);host.innerHTML=names.join('')||'<div class="empty compact">Niemand ist gerade im Sprachkanal.</div>'}
+async function joinCommunityVoice(id){
+  const c=(currentCommunityData?.channels||[]).find(x=>sameId(x.id,id)); if(!c||c.type!=='voice')return;
+  try{
+    if(currentVoiceChannel && !sameId(currentVoiceChannel.id,c.id)) await leaveCommunityVoice();
+    if(!voiceLocalStream){voiceLocalStream=await navigator.mediaDevices.getUserMedia({audio:true});}
+    currentVoiceChannel=c; renderServers(); const view=$('#serverChannelView'); if(view)view.innerHTML=`<div class="voice-room"><div class="server-chat-head"><div><h3>🔊 ${esc(c.name)}</h3><small>Sprachkanal · Peer-to-Peer</small></div><button id="leaveVoice" class="secondary danger-btn">🔌 Verlassen</button></div><div class="voice-room-info">Dein Mikrofon ist aktiv. Andere Mitglieder im gleichen Sprachkanal können dich hören.</div><div id="voiceStatusList" class="voice-members"></div></div>`;
+    $('#leaveVoice')?.addEventListener('click',leaveCommunityVoice);
+    updateVoiceMemberList();
+    socket?.emit('server_voice_join',{serverId:currentCommunityServer.id,channelId:c.id});
+  }catch(e){toast('Mikrofonzugriff wurde nicht erlaubt oder ist nicht verfügbar.');}
+}
+async function leaveCommunityVoice(){
+  socket?.emit('server_voice_leave');
+  for(const [,pc] of voicePeers)pc.close(); voicePeers.clear();
+  if(voiceLocalStream){voiceLocalStream.getTracks().forEach(t=>t.stop());voiceLocalStream=null;}
+  currentVoiceChannel=null; renderServers(); if(currentCommunityChannel)await openCommunityChannel(currentCommunityChannel.id);
+}
+async function makeVoicePeer(peerId,user,offer){
+  let item=voicePeers.get(peerId);
+  if(item?.pc){if(user && !item.user)item.user=user;return item.pc;}
+  const pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+  item={pc,user:user||item?.user||null}; voicePeers.set(peerId,item);
+  voiceLocalStream?.getTracks().forEach(t=>pc.addTrack(t,voiceLocalStream));
+  pc.onicecandidate=e=>{if(e.candidate)socket?.emit('server_voice_signal',{target:peerId,data:{candidate:e.candidate}})};
+  pc.ontrack=e=>{let a=document.getElementById('voice-audio-'+peerId);if(!a){a=document.createElement('audio');a.id='voice-audio-'+peerId;a.autoplay=true;a.playsInline=true;document.body.appendChild(a)}a.srcObject=e.streams[0]};
+  pc.onconnectionstatechange=()=>{if(['failed','closed','disconnected'].includes(pc.connectionState)){pc.close();voicePeers.delete(peerId);document.getElementById('voice-audio-'+peerId)?.remove();updateVoiceMemberList()}};
+  if(offer){const o=await pc.createOffer();await pc.setLocalDescription(o);socket?.emit('server_voice_signal',{target:peerId,data:{description:pc.localDescription}})}
+  updateVoiceMemberList(); return pc;
+}
+function bindCommunitySocket(){
+  if(!socket)return;
+  socket.on('server_channel_message',m=>{if(currentCommunityChannel&&sameId(m.channel_id,currentCommunityChannel.id)){const e=$('#serverMessages');if(e){e.insertAdjacentHTML('beforeend',communityMessageHTML(m));scrollCommunityMessages();}}});
+  socket.on('server_voice_peer',async p=>{if(!currentVoiceChannel)return;await makeVoicePeer(p.socketId,p.user,true);updateVoiceMemberList();});
+  socket.on('server_voice_peer_joined',p=>{if(!currentVoiceChannel)return;voicePeers.set(p.socketId,{pc:voicePeers.get(p.socketId)?.pc||null,user:p.user});updateVoiceMemberList();});
+  socket.on('server_voice_peer_left',p=>{const item=voicePeers.get(p.socketId);if(item)item.pc.close();voicePeers.delete(p.socketId);document.getElementById('voice-audio-'+p.socketId)?.remove();updateVoiceMemberList();});
+  socket.on('server_voice_signal',async packet=>{const from=packet.from;let item=voicePeers.get(from);if(!item)item=voicePeers.set(from,{pc:null,user:null}).get(from);if(!item.pc){await makeVoicePeer(from,item.user,false);item=voicePeers.get(from);}const d=packet.data||{};try{if(d.description){if(d.description.type==='offer'){await item.pc.setRemoteDescription(d.description);const ans=await item.pc.createAnswer();await item.pc.setLocalDescription(ans);socket?.emit('server_voice_signal',{target:from,data:{description:item.pc.localDescription}});}else if(d.description.type==='answer'){await item.pc.setRemoteDescription(d.description);}}else if(d.candidate){await item.pc.addIceCandidate(d.candidate);}}catch(e){console.warn('voice signal',e.message)}});
+}
 function renderLeaderboard(){
   const sorted=[...members].sort((a,b)=>(b.xp-a.xp)||((b.level||1)-(a.level||1)));
   $('#page-leaderboard').innerHTML=`<div class="section-title"><div><h2>🏆 Rangliste</h2><div class="eyebrow">LEVEL · XP · AKTIVITÄT</div></div></div><div class="card"><div class="rank-help">+2 XP pro öffentlicher Nachricht · +25 XP einmal täglich beim Login</div>${sorted.map((u,i)=>`<div class="rank-row"><div class="rank-number">#${i+1}</div><div class="member-head"><img class="avatar" src="${esc(avatar(u))}"><div><b>${esc(u.global_name||u.username)}</b><div class="role">${esc(displayRole(u))}</div></div></div><div class="rank-level"><strong>Level ${u.level||1}</strong>${levelInfo(u)}</div><div class="rank-xp">${u.xp} XP</div></div>`).join('')||'<div class="empty">Noch keine Rangliste.</div>'}</div>`;
@@ -403,6 +509,7 @@ function connectSocket(){if(socket)return;socket=io();socket.on('public_message'
 });
 socket.on('public_chat_cleared',()=>{const e=$('#publicMessages');if(e)e.innerHTML='';});
 socket.on('private_message',m=>{if(currentPrivate&&(sameId(m.sender_id,currentPrivate.id)||sameId(m.receiver_id,currentPrivate.id))){const e=$('#privateMessages');if(e){e.insertAdjacentHTML('beforeend',messageHTML(m));scrollPrivate()}}});
+bindCommunitySocket();
 socket.on('presence',p=>{members=members.map(u=>sameId(u.id,p.userId)?{...u,last_seen:p.status==='online'?new Date().toISOString():u.last_seen}:u);renderHome();if($('.page.active')?.id==='page-members')renderMembers()});
 setInterval(refreshMembers,30000);
 }async function go(page,update=true){
@@ -412,7 +519,7 @@ setInterval(refreshMembers,30000);
   if(update)$('#crumb').textContent=pages[page];
   setPageTheme(page);
   if(page==='home')renderHome();if(page==='members')renderMembers();if(page==='friends'){loadFriends().then(renderFriends)}if(page==='chat')renderChat();
-  if(page==='private')renderPrivate();if(page==='leaderboard')renderLeaderboard();if(page==='settings')await renderSettings();
+  if(page==='private')renderPrivate();if(page==='leaderboard')renderLeaderboard();if(page==='servers'){await loadCommunityServers();renderServers();}if(page==='settings')await renderSettings();
   if(innerWidth<761)$('.sidebar')?.classList.remove('open');
 }
 document.addEventListener('click',e=>{
@@ -437,7 +544,14 @@ document.addEventListener('click',e=>{
   unblockFriend(btn.dataset.unblockFriend,btn);
 });
 $$('.nav').forEach(n=>n.onclick=()=>go(n.dataset.page));$('#mobileMenu').onclick=()=>$('.sidebar').classList.toggle('open');
-fetch('/api/me').then(r=>r.json()).then(async d=>{me=d.user;if(!me){renderTop();renderHome();setPageTheme('home');return}const m=await api('/api/members');members=m.members;try{friendsData=await api('/api/friends')}catch{}renderTop();renderHome();renderMembers();renderChat();renderPrivate();renderLeaderboard();renderSettings();connectSocket();setPageTheme('home');}).catch(console.error);
+function capturePendingInvite(){const params=new URLSearchParams(location.search);const code=params.get('invite');if(code)localStorage.setItem('zf_pending_invite',code)}
+async function autoJoinPendingInvite(){
+  const code=localStorage.getItem('zf_pending_invite'); if(!code||!me)return;
+  localStorage.removeItem('zf_pending_invite');
+  try{const d=await api('/api/invites/join',{method:'POST',body:JSON.stringify({invite:code})});toast(d.alreadyMember?`Du bist bereits auf „${d.serverName}“.`:`Du bist „${d.serverName}“ beigetreten!`);await loadCommunityServers();if(communityServers.some(s=>sameId(s.id,d.serverId)))await openCommunityServer(d.serverId);}catch(e){let msg='Einladung konnte nicht angenommen werden.';try{const d=JSON.parse(e.message);if(d.error)msg=d.error}catch{}toast(msg)}
+}
+capturePendingInvite();
+fetch('/api/me').then(r=>r.json()).then(async d=>{me=d.user;if(!me){renderTop();renderHome();setPageTheme('home');return}const m=await api('/api/members');members=m.members;try{friendsData=await api('/api/friends')}catch{}renderTop();renderHome();renderMembers();renderChat();renderPrivate();renderLeaderboard();try{await loadCommunityServers();}catch{}renderServers();if(communityServers[0]){try{await openCommunityServer(communityServers[0].id)}catch{}}await autoJoinPendingInvite();renderSettings();connectSocket();setPageTheme('home');}).catch(console.error);
 fetch('/api/settings').then(r=>r.ok?r.json():null).then(d=>{if(d?.settings?.theme&&d.settings.theme!=='neon')document.body.classList.add(d.settings.theme)}).catch(()=>{});
 fetch('/api/config').then(r=>r.json()).then(c=>{
   config=c;

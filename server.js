@@ -105,6 +105,49 @@ async function initDatabase() {
     CREATE INDEX IF NOT EXISTS idx_public_messages_id ON public_messages (id DESC);
     CREATE INDEX IF NOT EXISTS idx_private_messages_pair ON private_messages (sender_id, receiver_id, id);
     CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens (user_id);
+    CREATE TABLE IF NOT EXISTS community_servers (
+      id SERIAL PRIMARY KEY,
+      owner_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS community_server_members (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL REFERENCES community_servers(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      role TEXT NOT NULL DEFAULT 'member' CHECK (role IN ('owner','member')),
+      joined_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      UNIQUE(server_id, user_id)
+    );
+    CREATE TABLE IF NOT EXISTS community_channels (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL REFERENCES community_servers(id) ON DELETE CASCADE,
+      name TEXT NOT NULL,
+      type TEXT NOT NULL DEFAULT 'text' CHECK (type IN ('text','voice')),
+      position INTEGER NOT NULL DEFAULT 0,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS community_messages (
+      id SERIAL PRIMARY KEY,
+      channel_id INTEGER NOT NULL REFERENCES community_channels(id) ON DELETE CASCADE,
+      user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      message TEXT NOT NULL,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE TABLE IF NOT EXISTS community_invites (
+      id SERIAL PRIMARY KEY,
+      server_id INTEGER NOT NULL REFERENCES community_servers(id) ON DELETE CASCADE,
+      code TEXT UNIQUE NOT NULL,
+      created_by INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+      uses INTEGER NOT NULL DEFAULT 0,
+      max_uses INTEGER,
+      expires_at TIMESTAMPTZ,
+      created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
+    );
+    CREATE INDEX IF NOT EXISTS idx_community_server_members_user ON community_server_members (user_id, server_id);
+    CREATE INDEX IF NOT EXISTS idx_community_channels_server ON community_channels (server_id, position, id);
+    CREATE INDEX IF NOT EXISTS idx_community_messages_channel ON community_messages (channel_id, id DESC);
+    CREATE INDEX IF NOT EXISTS idx_community_invites_code ON community_invites (code);
   `);
   console.log('Supabase/PostgreSQL-Datenbank ist bereit.');
 }
@@ -421,6 +464,136 @@ app.delete('/api/friends/:id/block', requireUser, async (req,res) => {
   res.json({ok:true,removed:true});
 });
 
+// ZockerFreunde 4.0 private community servers
+async function requireServerMember(req, res, next) {
+  try {
+    const serverId = Number(req.params.serverId || req.params.id);
+    if (!Number.isInteger(serverId) || serverId <= 0) return res.status(400).json({ error: 'Ungültiger Server.' });
+    const membership = await db.get(`
+      SELECT s.*, sm.role AS membership_role
+      FROM community_servers s
+      JOIN community_server_members sm ON sm.server_id=s.id AND sm.user_id=$1
+      WHERE s.id=$2`, [req.user.id, serverId]);
+    if (!membership) return res.status(404).json({ error: 'Server nicht gefunden.' });
+    req.communityServer = membership;
+    next();
+  } catch (e) { console.error('Server-Mitgliedschaft:', e.message); res.status(500).json({ error: 'Serverfehler' }); }
+}
+
+function inviteCode() {
+  return crypto.randomBytes(8).toString('base64url').replace(/[^A-Za-z0-9_-]/g, '').slice(0, 12);
+}
+
+async function canAccessChannel(userId, serverId, channelId) {
+  return Boolean(await db.get(`
+    SELECT c.id FROM community_channels c
+    JOIN community_server_members sm ON sm.server_id=c.server_id AND sm.user_id=$1
+    WHERE c.id=$2 AND c.server_id=$3`, [userId, channelId, serverId]));
+}
+
+app.get('/api/servers', requireUser, async (req,res) => {
+  const rows = await db.all(`
+    SELECT s.id,s.name,s.owner_id,s.created_at,sm.role AS membership_role,
+      (SELECT COUNT(*)::int FROM community_server_members x WHERE x.server_id=s.id) AS member_count
+    FROM community_servers s
+    JOIN community_server_members sm ON sm.server_id=s.id AND sm.user_id=$1
+    ORDER BY s.created_at ASC,s.id ASC`, [req.user.id]);
+  res.json({ servers: rows });
+});
+
+app.post('/api/servers', requireUser, async (req,res) => {
+  const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,48);
+  if(name.length<2) return res.status(400).json({error:'Der Servername muss mindestens 2 Zeichen haben.'});
+  const result=await db.get('INSERT INTO community_servers(owner_id,name) VALUES($1,$2) RETURNING *',[req.user.id,name]);
+  await db.run('INSERT INTO community_server_members(server_id,user_id,role) VALUES($1,$2,\'owner\')',[result.id,req.user.id]);
+  await db.run('INSERT INTO community_channels(server_id,name,type,position) VALUES($1,\'allgemein\',\'text\',0),($1,\'Lounge\',\'voice\',1)',[result.id]);
+  res.json({ok:true,server:result});
+});
+
+app.get('/api/servers/:id', requireUser, async (req,res,next) => { req.params.serverId=req.params.id; next(); }, requireServerMember, async (req,res) => {
+  const serverId=req.communityServer.id;
+  const channels=await db.all('SELECT id,name,type,position FROM community_channels WHERE server_id=$1 ORDER BY position ASC,id ASC',[serverId]);
+  const members=await db.all(`
+    SELECT u.* FROM community_server_members sm JOIN users u ON u.id=sm.user_id
+    WHERE sm.server_id=$1 ORDER BY LOWER(COALESCE(u.global_name,u.username)) ASC`,[serverId]);
+  const invites=await db.all(`SELECT code,uses,max_uses,expires_at,created_at FROM community_invites WHERE server_id=$1 AND (expires_at IS NULL OR expires_at>CURRENT_TIMESTAMP) ORDER BY id DESC LIMIT 10`,[serverId]);
+  res.json({server:{id:req.communityServer.id,name:req.communityServer.name,owner_id:req.communityServer.owner_id,created_at:req.communityServer.created_at,membership_role:req.communityServer.membership_role},channels,members:await getPublicUsers(members),invites});
+});
+
+app.post('/api/servers/:serverId/channels', requireUser, requireServerMember, async (req,res) => {
+  if(req.communityServer.owner_id !== req.user.id) return res.status(403).json({error:'Nur der Serverbesitzer kann Kanäle erstellen.'});
+  const name=clean(req.body?.name).replace(/\s+/g,' ').slice(0,32);
+  const type=req.body?.type==='voice'?'voice':'text';
+  if(name.length<1) return res.status(400).json({error:'Kanalname fehlt.'});
+  const max=await db.get('SELECT COALESCE(MAX(position),-1)+1 AS p FROM community_channels WHERE server_id=$1',[req.communityServer.id]);
+  const c=await db.get('INSERT INTO community_channels(server_id,name,type,position) VALUES($1,$2,$3,$4) RETURNING id,name,type,position',[req.communityServer.id,name,type,max.p]);
+  res.json({ok:true,channel:c});
+});
+
+app.delete('/api/servers/:serverId/channels/:channelId', requireUser, requireServerMember, async (req,res) => {
+  if(req.communityServer.owner_id !== req.user.id) return res.status(403).json({error:'Nur der Serverbesitzer kann Kanäle löschen.'});
+  const channelId=Number(req.params.channelId);
+  const c=await db.get('SELECT * FROM community_channels WHERE id=$1 AND server_id=$2',[channelId,req.communityServer.id]);
+  if(!c) return res.status(404).json({error:'Kanal nicht gefunden.'});
+  if(c.name.toLowerCase()==='allgemein') return res.status(400).json({error:'Der Kanal Allgemein kann nicht gelöscht werden.'});
+  await db.run('DELETE FROM community_channels WHERE id=$1',[channelId]);
+  res.json({ok:true});
+});
+
+app.get('/api/servers/:serverId/channels/:channelId/messages', requireUser, requireServerMember, async (req,res) => {
+  const channelId=Number(req.params.channelId);
+  if(!(await canAccessChannel(req.user.id,req.communityServer.id,channelId))) return res.status(404).json({error:'Kanal nicht gefunden.'});
+  const rows=await db.all(`SELECT m.id,m.channel_id,m.user_id,m.message,m.created_at,u.username,u.global_name,u.avatar,u.role FROM community_messages m JOIN users u ON u.id=m.user_id WHERE m.channel_id=$1 ORDER BY m.id DESC LIMIT 150`,[channelId]);
+  res.json({messages:rows.reverse()});
+});
+
+app.post('/api/servers/:serverId/channels/:channelId/messages', requireUser, requireServerMember, async (req,res) => {
+  const channelId=Number(req.params.channelId);
+  if(!(await canAccessChannel(req.user.id,req.communityServer.id,channelId))) return res.status(404).json({error:'Kanal nicht gefunden.'});
+  const channel=await db.get('SELECT type FROM community_channels WHERE id=$1 AND server_id=$2',[channelId,req.communityServer.id]);
+  if(channel?.type!=='text') return res.status(400).json({error:'In einem Sprachkanal kann nicht geschrieben werden.'});
+  const message=clean(req.body?.message).slice(0,1000); if(!message) return res.status(400).json({error:'Nachricht darf nicht leer sein.'});
+  const info=await db.get('INSERT INTO community_messages(channel_id,user_id,message) VALUES($1,$2,$3) RETURNING id',[channelId,req.user.id,message]);
+  const row=await db.get(`SELECT m.id,m.channel_id,m.user_id,m.message,m.created_at,u.username,u.global_name,u.avatar,u.role FROM community_messages m JOIN users u ON u.id=m.user_id WHERE m.id=$1`,[info.id]);
+  io.sockets.sockets.forEach(s=>{ if(s?.user && s.serverMembershipId===req.communityServer.id && s.serverTextChannel===channelId) s.emit('server_channel_message',row); });
+  res.json({ok:true,message:row});
+});
+
+app.post('/api/servers/:serverId/invites', requireUser, requireServerMember, async (req,res) => {
+  const code=inviteCode();
+  const expiresHours=Number(req.body?.expiresHours);
+  const expires=Number.isFinite(expiresHours)&&expiresHours>0&&expiresHours<=168 ? new Date(Date.now()+expiresHours*3600*1000) : null;
+  const maxUses=Number(req.body?.maxUses);
+  const max=Number.isInteger(maxUses)&&maxUses>0&&maxUses<=1000 ? maxUses : null;
+  const row=await db.get('INSERT INTO community_invites(server_id,code,created_by,max_uses,expires_at) VALUES($1,$2,$3,$4,$5) RETURNING code,uses,max_uses,expires_at,created_at',[req.communityServer.id,code,req.user.id,max,expires]);
+  res.json({ok:true,invite:row});
+});
+
+app.post('/api/invites/join', requireUser, async (req,res) => {
+  let raw=clean(req.body?.invite||'');
+  if(!raw) return res.status(400).json({error:'Einladung fehlt.'});
+  try { const u=new URL(raw); const fromQuery=u.searchParams.get('invite'); if(fromQuery) raw=fromQuery; } catch {}
+  raw=raw.replace(/^invite[:/]+/i,'').trim().replace(/[^A-Za-z0-9_-]/g,'').slice(0,32);
+  const invite=await db.get(`SELECT i.*,s.name,s.owner_id FROM community_invites i JOIN community_servers s ON s.id=i.server_id WHERE i.code=$1 AND (i.expires_at IS NULL OR i.expires_at>CURRENT_TIMESTAMP)`,[raw]);
+  if(!invite) return res.status(404).json({error:'Einladung ist ungültig oder abgelaufen.'});
+  if(invite.max_uses!==null && invite.uses>=invite.max_uses) return res.status(409).json({error:'Diese Einladung wurde bereits zu oft verwendet.'});
+  const existing=await db.get('SELECT id FROM community_server_members WHERE server_id=$1 AND user_id=$2',[invite.server_id,req.user.id]);
+  if(!existing){
+    await db.run('INSERT INTO community_server_members(server_id,user_id,role) VALUES($1,$2,\'member\')',[invite.server_id,req.user.id]);
+    await db.run('UPDATE community_invites SET uses=uses+1 WHERE id=$1',[invite.id]);
+  }
+  res.json({ok:true,serverId:invite.server_id,serverName:invite.name,alreadyMember:Boolean(existing)});
+});
+
+app.get('/api/invites/:code', async (req,res) => {
+  const code=String(req.params.code||'').replace(/[^A-Za-z0-9_-]/g,'').slice(0,32);
+  const invite=await db.get(`SELECT i.code,i.uses,i.max_uses,i.expires_at,s.id AS server_id,s.name,s.owner_id FROM community_invites i JOIN community_servers s ON s.id=i.server_id WHERE i.code=$1 AND (i.expires_at IS NULL OR i.expires_at>CURRENT_TIMESTAMP)`,[code]);
+  if(!invite) return res.status(404).json({error:'Einladung nicht gefunden.'});
+  if(invite.max_uses!==null && invite.uses>=invite.max_uses) return res.status(409).json({error:'Diese Einladung ist aufgebraucht.'});
+  const memberCount=await db.get('SELECT COUNT(*)::int AS count FROM community_server_members WHERE server_id=$1',[invite.server_id]);
+  res.json({invite:{code:invite.code,server_id:invite.server_id,server_name:invite.name,member_count:memberCount.count,expires_at:invite.expires_at}});
+});
+
 function adminIds() {
   return String(process.env.DISCORD_ADMIN_IDS || '')
     .split(',')
@@ -598,6 +771,43 @@ io.on('connection', socket => {
       io.emit('public_message', row);
     } catch (e) { console.error('public_message:', e.message); }
   });
+  socket.on('server_channel_watch', async data => {
+    try {
+      if(!socket.user)return;
+      const serverId=Number(data?.serverId),channelId=Number(data?.channelId);
+      if(!Number.isInteger(serverId)||!Number.isInteger(channelId))return;
+      const ok=await canAccessChannel(socket.user.id,serverId,channelId);
+      const channel=await db.get('SELECT type FROM community_channels WHERE id=$1 AND server_id=$2',[channelId,serverId]);
+      if(!ok || channel?.type!=='text')return;
+      socket.serverMembershipId=serverId;
+      socket.serverTextChannel=channelId;
+    }catch(e){console.error('server_channel_watch:',e.message)}
+  });
+  socket.on('server_voice_join', async data => {
+    try {
+      if(!socket.user) return;
+      const serverId=Number(data?.serverId), channelId=Number(data?.channelId);
+      if(!Number.isInteger(serverId)||!Number.isInteger(channelId)) return;
+      const membership=await db.get('SELECT role FROM community_server_members WHERE server_id=$1 AND user_id=$2',[serverId,socket.user.id]);
+      const channel=await db.get('SELECT id,type FROM community_channels WHERE id=$1 AND server_id=$2',[channelId,serverId]);
+      if(!membership || !channel || channel.type!=='voice') return socket.emit('server_voice_error',{error:'Sprachkanal nicht verfügbar.'});
+      for(const [,s] of io.sockets.sockets){ if(s!==socket && s.voiceServerId===serverId && s.voiceChannelId===channelId) socket.emit('server_voice_peer', {socketId:s.id,user:s.socketUserSummary||s.user}); }
+      socket.voiceServerId=serverId; socket.voiceChannelId=channelId; socket.socketUserSummary={id:socket.user.id,username:socket.user.username,global_name:socket.user.global_name,avatar:socket.user.avatar};
+      for(const [,s] of io.sockets.sockets){ if(s!==socket && s.voiceServerId===serverId && s.voiceChannelId===channelId) s.emit('server_voice_peer_joined',{socketId:socket.id,user:socket.socketUserSummary}); }
+    } catch(e){ console.error('server_voice_join:',e.message); }
+  });
+  socket.on('server_voice_leave', () => {
+    const sid=socket.voiceServerId,cid=socket.voiceChannelId;
+    if(!sid||!cid)return;
+    for(const [,s] of io.sockets.sockets){ if(s!==socket && s.voiceServerId===sid && s.voiceChannelId===cid) s.emit('server_voice_peer_left',{socketId:socket.id}); }
+    socket.voiceServerId=null; socket.voiceChannelId=null;
+  });
+  socket.on('server_voice_signal', data => {
+    const target=io.sockets.sockets.get(String(data?.target));
+    if(!target||!socket.voiceServerId||target.voiceServerId!==socket.voiceServerId||target.voiceChannelId!==socket.voiceChannelId)return;
+    target.emit('server_voice_signal',{from:socket.id,data:data.data});
+  });
+
   socket.on('private_message', async data => {
     try {
       if (!socket.user) return;
@@ -610,6 +820,8 @@ io.on('connection', socket => {
     } catch (e) { console.error('private_message:', e.message); }
   });
   socket.on('disconnect', () => {
+    const sid=socket.voiceServerId,cid=socket.voiceChannelId;
+    if(sid&&cid){ for(const [,s] of io.sockets.sockets){ if(s!==socket && s.voiceServerId===sid && s.voiceChannelId===cid) s.emit('server_voice_peer_left',{socketId:socket.id}); } }
     if (socket.user) { const n = (online.get(socket.user.id) || 1) - 1; if (n <= 0) { online.delete(socket.user.id); io.emit('presence', { userId: socket.user.id, status: 'offline' }); } else online.set(socket.user.id, n); }
   });
 });

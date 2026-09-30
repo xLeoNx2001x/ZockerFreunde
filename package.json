@@ -1,8 +1,8 @@
 {
   "name": "zockerfreunde-community",
-  "version": "3.5.3",
+  "version": "4.0.0",
   "private": true,
-  "description": "Zockerfreunde - Gaming Community Website",
+  "description": "Zockerfreunde - Gaming Community Website with private community servers",
   "main": "server.js",
   "scripts": {
     "start": "node server.js"
