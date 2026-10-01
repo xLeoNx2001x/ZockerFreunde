@@ -1,0 +1,25 @@
+ZockerFreunde – GitHub-Historie komplett neu starten
+
+WARNUNG:
+Diese Befehle schreiben die Git-Historie neu. Alte Commit-Hashes sind danach
+nicht mehr Teil des main-Branches. Vorher unbedingt eine Sicherung machen.
+
+PowerShell / Git Bash im Projektordner:
+
+git checkout --orphan clean-main
+git add .
+git commit -m "Initial commit"
+git branch -D main
+git branch -m main
+git push --force origin main
+
+Danach hat main nur noch den neuen Initial-Commit.
+
+Remote-Branches prüfen:
+git branch -a
+
+Nicht benötigte Remote-Branches löschen:
+git push origin --delete BRANCHNAME
+
+WICHTIG:
+Der Force-Push überschreibt die Historie des GitHub-Branches main.
