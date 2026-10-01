@@ -1,0 +1,22 @@
+<!doctype html>
+<html lang="de"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><title>Zockerfreunde</title><link rel="icon" href="/logo.png"><link rel="stylesheet" href="/style.css?v=5.0.0"><script src="/socket.io/socket.io.js"></script></head>
+<body><div class="bg-orb orb1"></div><div class="bg-orb orb2"></div><div id="toast"></div>
+<div class="app">
+<aside class="sidebar"><div class="brand"><img src="/logo.png"><div><b>ZOCKER<span>FREUNDE</span></b><small>COMMUNITY</small></div></div>
+<nav><button data-page="home" class="nav active">⌂ <span>Startseite</span></button><button data-page="members" class="nav protected-nav">♟ <span>Mitglieder</span></button><button data-page="friends" class="nav protected-nav">👥 <span>Freunde</span></button><button data-page="discordServers" class="nav protected-nav">◉ <span>Meine Discord-Server</span></button><button data-page="chat" class="nav protected-nav">◈ <span>Öffentlicher Chat</span></button><button data-page="private" class="nav protected-nav">✉ <span>Private Chats</span></button><button data-page="leaderboard" class="nav protected-nav">🏆 <span>Rangliste</span></button></nav>
+<div class="side-bottom"><button data-page="settings" class="nav protected-nav">⚙ <span>Einstellungen</span></button><a id="discordLink" class="discord-btn" target="_blank">Discord beitreten ↗</a></div></aside>
+<main><header class="topbar"><button id="mobileMenu" class="iconbtn">☰</button><div class="crumb" id="crumb">Startseite</div><div class="top-user" id="topUser"></div></header>
+<section id="page-home" class="page active"></section><section id="page-members" class="page"></section><section id="page-friends" class="page"></section><section id="page-chat" class="page"></section><section id="page-private" class="page"></section><section id="page-leaderboard" class="page"></section><section id="page-discordServers" class="page"></section>
+<section id="page-settings" class="page"></section>
+</main></div>
+<div id="loginGate" class="login-gate" aria-hidden="true">
+  <div class="login-gate-card">
+    <button class="gate-close" onclick="closeLoginGate()" aria-label="Schließen">×</button>
+    <div class="gate-logo"><img src="/logo.png" alt="Zockerfreunde"></div>
+    <div class="eyebrow">ZOCKERFREUNDE COMMUNITY</div>
+    <h2>Dieser Bereich ist nur für Mitglieder.</h2>
+    <p>Melde dich mit Discord an, um Mitglieder, Chats, Profile, Rangliste und Einstellungen zu nutzen.</p>
+    <a class="primary gate-login" href="/auth/discord">Mit Discord anmelden →</a>
+  </div>
+</div>
+<script src="/app.js?v=5.0.0"></script></body></html>
