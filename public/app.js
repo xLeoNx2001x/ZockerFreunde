@@ -2,8 +2,8 @@ const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 let me=null,members=[],socket=null,currentPrivate=null,config={},friendsData={friends:[],sent:[],incoming:[],blocked:[]},selectedFriend=null,communityServers=[],currentCommunityServer=null,currentCommunityData=null,currentCommunityChannel=null,currentVoiceChannel=null,voiceLocalStream=null,voiceScreenStream=null,voicePeers=new Map(),serverViewMode='mine';
 const serverUnread=new Map();
 let serverMemberSearchValue='';
-const pages={home:'Startseite',members:'Mitglieder',friends:'Freunde',chat:'Öffentlicher Chat',private:'Private Chats',leaderboard:'Rangliste',settings:'Einstellungen',discordServers:'Meine Discord-Server'};
-const protectedPages=new Set(['members','friends','chat','private','leaderboard','settings','discordServers']);
+const pages={home:'Startseite',members:'Mitglieder',friends:'Freunde',chat:'Öffentlicher Chat',private:'Private Chats',leaderboard:'Rangliste',settings:'Einstellungen'};
+const protectedPages=new Set(['members','friends','chat','private','leaderboard','settings']);
 const pageThemes={home:'theme-home',members:'theme-members',friends:'theme-members',chat:'theme-chat',private:'theme-private',leaderboard:'theme-leaderboard',settings:'theme-settings'};
 function setPageTheme(page){document.body.classList.remove(...Object.values(pageThemes));document.body.classList.add(pageThemes[page]||pageThemes.home);}
 function showLoginGate(){const e=$('#loginGate');if(!e)return;e.classList.add('show');e.setAttribute('aria-hidden','false');}
@@ -525,7 +525,7 @@ document.addEventListener('visibilitychange',()=>{if(document.visibilityState===
   if(update)$('#crumb').textContent=pages[page];
   setPageTheme(page);
   if(page==='home')renderHome();if(page==='members')renderMembers();if(page==='friends'){loadFriends().then(renderFriends)}if(page==='chat')renderChat();
-  if(page==='private')renderPrivate();if(page==='leaderboard')renderLeaderboard();if(page==='discordServers')await renderDiscordServers();if(page==='settings')await renderSettings();
+  if(page==='private')renderPrivate();if(page==='leaderboard')renderLeaderboard();if(page==='settings')await renderSettings();
   if(innerWidth<761)$('.sidebar')?.classList.remove('open');
 }
 document.addEventListener('click',e=>{
