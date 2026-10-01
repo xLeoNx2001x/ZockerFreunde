@@ -57,6 +57,7 @@ async function initDatabase() {
       last_seen TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
       discord_in_server BOOLEAN NOT NULL DEFAULT FALSE,
       discord_roles TEXT NOT NULL DEFAULT '[]',
+      discord_guilds TEXT NOT NULL DEFAULT '[]',
       last_login_reward TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE IF NOT EXISTS auth_tokens (
@@ -226,6 +227,7 @@ async function initDatabase() {
       read BOOLEAN NOT NULL DEFAULT FALSE,
       created_at TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP
     );
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_guilds TEXT NOT NULL DEFAULT '[]';
     ALTER TABLE community_servers ADD COLUMN IF NOT EXISTS description TEXT NOT NULL DEFAULT '';
     ALTER TABLE community_servers ADD COLUMN IF NOT EXISTS icon TEXT NOT NULL DEFAULT '';
     ALTER TABLE community_servers ADD COLUMN IF NOT EXISTS chat_bg TEXT NOT NULL DEFAULT '#0b1020';
@@ -1088,7 +1090,7 @@ app.get('/auth/discord', (req, res) => {
   if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_CLIENT_SECRET) return res.status(500).send('Discord OAuth ist noch nicht konfiguriert.');
   const state = crypto.randomBytes(20).toString('hex');
   res.cookie('zf_oauth_state', state, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', maxAge: 10 * 60 * 1000 });
-  const params = new URLSearchParams({ client_id: process.env.DISCORD_CLIENT_ID, response_type: 'code', redirect_uri: process.env.DISCORD_REDIRECT_URI, scope: 'identify', state });
+  const params = new URLSearchParams({ client_id: process.env.DISCORD_CLIENT_ID, response_type: 'code', redirect_uri: process.env.DISCORD_REDIRECT_URI, scope: 'identify guilds', state });
   res.redirect(`https://discord.com/oauth2/authorize?${params}`);
 });
 app.get('/auth/discord/callback', async (req, res) => {
@@ -1101,13 +1103,21 @@ app.get('/auth/discord/callback', async (req, res) => {
     const userRes = await fetch('https://discord.com/api/users/@me', { headers: { Authorization: `Bearer ${token.access_token}` } });
     if (!userRes.ok) throw new Error('User request failed');
     const d = await userRes.json();
+    let discordGuilds = [];
+    try {
+      const guildRes = await fetch('https://discord.com/api/users/@me/guilds', { headers: { Authorization: `Bearer ${token.access_token}` } });
+      if (guildRes.ok) {
+        const rawGuilds = await guildRes.json();
+        discordGuilds = Array.isArray(rawGuilds) ? rawGuilds.map(g => ({ id:String(g.id), name:String(g.name||'Unbenannter Server'), icon:g.icon?`https://cdn.discordapp.com/icons/${g.id}/${g.icon}.png?size=256`:'', owner:Boolean(g.owner), permissions:String(g.permissions||'') })).sort((a,b)=>a.name.localeCompare(b.name,'de',{sensitivity:'base'})) : [];
+      }
+    } catch (e) { console.warn('Discord-Guilds konnten nicht geladen werden:', e.message); }
     const avatar = d.avatar ? `https://cdn.discordapp.com/avatars/${d.id}/${d.avatar}.png?size=256` : `https://cdn.discordapp.com/embed/avatars/${Number(d.discriminator || 0) % 5}.png`;
     let u = await db.get('SELECT * FROM users WHERE discord_id=$1', [d.id]);
     if (!u) {
-      const info = await db.get('INSERT INTO users(discord_id,username,global_name,avatar) VALUES($1,$2,$3,$4) RETURNING id', [d.id, d.username, d.global_name || d.username, avatar]);
+      const info = await db.get('INSERT INTO users(discord_id,username,global_name,avatar,discord_guilds) VALUES($1,$2,$3,$4,$5) RETURNING id', [d.id, d.username, d.global_name || d.username, avatar, JSON.stringify(discordGuilds)]);
       u = await db.get('SELECT * FROM users WHERE id=$1', [info.id]);
     } else {
-      await db.run('UPDATE users SET username=$1,global_name=$2,avatar=$3,last_seen=CURRENT_TIMESTAMP WHERE id=$4', [d.username, d.global_name || d.username, avatar, u.id]);
+      await db.run('UPDATE users SET username=$1,global_name=$2,avatar=$3,discord_guilds=$4,last_seen=CURRENT_TIMESTAMP WHERE id=$5', [d.username, d.global_name || d.username, avatar, JSON.stringify(discordGuilds), u.id]);
       u = await db.get('SELECT * FROM users WHERE id=$1', [u.id]);
     }
     const discordMember = await syncDiscordMember(d.id);
@@ -1122,6 +1132,11 @@ app.get('/auth/discord/callback', async (req, res) => {
     res.redirect('/');
   } catch (e) { console.error(e); res.status(500).send('Discord-Anmeldung fehlgeschlagen. Bitte Client-ID, Secret und Redirect-URI prüfen.'); }
 });
+app.get('/api/discord/guilds', requireUser, async (req,res)=>{
+  try { const row=await db.get('SELECT discord_guilds FROM users WHERE id=$1',[req.user.id]); let guilds=[]; try{guilds=JSON.parse(row?.discord_guilds||'[]')}catch{}; guilds=Array.isArray(guilds)?guilds:[]; guilds.sort((a,b)=>String(a.name||'').localeCompare(String(b.name||''),'de',{sensitivity:'base'})); res.json({guilds}); }
+  catch(e){ console.error(e); res.status(500).json({error:'Discord-Server konnten nicht geladen werden.'}); }
+});
+
 app.post('/auth/logout', async (req, res) => {
   const v = req.cookies?.zf_token;
   if (v) { const raw = v.split('.')[0]; await db.run('DELETE FROM auth_tokens WHERE token_hash=$1', [tokenHash(raw)]); }
