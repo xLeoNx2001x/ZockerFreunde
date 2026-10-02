@@ -1,8 +1,8 @@
 const $=s=>document.querySelector(s), $$=s=>[...document.querySelectorAll(s)];
 let me=null,members=[],socket=null,currentPrivate=null,config={},friendsData={friends:[],sent:[],incoming:[],blocked:[]},selectedFriend=null;
-const pages={home:'Startseite',members:'Mitglieder',friends:'Freunde',chat:'Öffentlicher Chat',private:'Private Chats',leaderboard:'Rangliste',settings:'Einstellungen'};
-const protectedPages=new Set(['members','friends','chat','private','leaderboard','settings']);
-const pageThemes={home:'theme-home',members:'theme-members',friends:'theme-members',chat:'theme-chat',private:'theme-private',leaderboard:'theme-leaderboard',settings:'theme-settings'};
+const pages={home:'Startseite',members:'Mitglieder',friends:'Freunde',chat:'Öffentlicher Chat',private:'Private Chats',dcserver:'DC Server',leaderboard:'Rangliste',settings:'Einstellungen'};
+const protectedPages=new Set(['members','friends','chat','private','dcserver','leaderboard','settings']);
+const pageThemes={home:'theme-home',members:'theme-members',friends:'theme-members',chat:'theme-chat',private:'theme-private',dcserver:'theme-private',leaderboard:'theme-leaderboard',settings:'theme-settings'};
 function setPageTheme(page){document.body.classList.remove(...Object.values(pageThemes));document.body.classList.add(pageThemes[page]||pageThemes.home);}
 function showLoginGate(){const e=$('#loginGate');if(!e)return;e.classList.add('show');e.setAttribute('aria-hidden','false');}
 function closeLoginGate(){const e=$('#loginGate');if(!e)return;e.classList.remove('show');e.setAttribute('aria-hidden','true');}
@@ -301,7 +301,22 @@ function renderLeaderboard(){
     if(fresh?.member){u=fresh.member;members=members.map(x=>String(x.id)===memberId?u:x);}
   }catch(e){console.warn('Profil konnte nicht aktualisiert werden:',e);}
   $('#page-members').innerHTML=`<div class="profile"><div class="card profile-card"><img class="avatar" src="${esc(avatar(u))}"><h2>${esc(u.global_name||u.username)}</h2><div class="role">${esc(displayRole(u))}</div><p>${esc(u.bio||'Noch keine Beschreibung.')}</p>${discordInfo(u)}${levelInfo(u)}<div class="online-label" style="justify-content:center"><i class="dot ${isOnline(u)?'online':''}"></i>${isOnline(u)?'Online':'Offline'}</div><div class="actions" style="justify-content:center"><button class="secondary" onclick="renderMembers()">← Zur Mitgliederliste</button><button class="primary" onclick="startPrivate(${String(u.id)})">✉ Nachricht</button></div></div><div><div class="section-title"><h2>Account-Informationen</h2></div><div class="info-grid"><div class="card info"><span>Discord-Name</span><strong>${esc(u.username)}</strong></div><div class="card info"><span>Discord-ID</span><strong class="small-value">${esc(u.discord_id||'—')}</strong></div><div class="card info"><span>Discord-Rolle</span><strong>${(u.discord_roles||[]).map(r=>esc(r.name)).join(', ')||'Keine Rolle'}</strong></div><div class="card info"><span>Level</span><strong>${u.level||1}</strong></div><div class="card info"><span>XP</span><strong>${u.xp}</strong></div><div class="card info"><span>Öffentliche Nachrichten</span><strong>${u.message_count||0}</strong></div><div class="card info"><span>Mitglied seit</span><strong>${new Date(u.created_at).toLocaleDateString('de-DE')}</strong></div><div class="card info"><span>Discord-Server</span><strong>${u.discord_in_server?'✓ Mitglied':'✕ Nicht Mitglied'}</strong></div></div></div></div>`;
-}async function renderSettings(){
+}
+async function renderDCServer(){
+  if(!me){$('#page-dcserver').innerHTML='<div class="empty">Bitte melde dich mit Discord an, um deine Server zu sehen.</div>';return;}
+  $('#page-dcserver').innerHTML='<div class="section-title"><div><h2>◉ DC Server</h2><div class="eyebrow">DEINE DISCORD-SERVER</div></div><button class="secondary" id="refreshDCServers">↻ Aktualisieren</button></div><div id="dcServerGrid" class="grid"><div class="empty">Server werden geladen …</div></div>';
+  async function load(){
+    const grid=$('#dcServerGrid'); if(!grid)return;
+    try{
+      const d=await api('/api/discord-servers');
+      const servers=Array.isArray(d.servers)?d.servers:[];
+      grid.innerHTML=servers.length?servers.map(s=>`<div class="card dc-server-card"><div class="dc-server-icon">${s.icon?`<img src="${esc(s.icon)}" alt="">`:'◉'}</div><div class="dc-server-main"><h3>${esc(s.name)}</h3><span>${s.owner?'👑 Serverbesitzer':'✓ Beigetreten'}</span></div></div>`).join(''):'<div class="empty">Discord hat keine Server für deinen Account zurückgegeben. Melde dich einmal erneut mit Discord an, damit die Serverliste aktualisiert wird.</div>';
+    }catch(e){grid.innerHTML='<div class="empty">Die Discord-Server konnten nicht geladen werden. Bitte erneut versuchen.</div>';}
+  }
+  $('#refreshDCServers').onclick=load;
+  load();
+}
+async function renderSettings(){
   if(!me){
     $('#page-settings').innerHTML='<div class="empty">Bitte melde dich mit Discord an, um Einstellungen zu öffnen.</div>';
     return;
@@ -453,7 +468,7 @@ setInterval(refreshMembers,30000);
   if(update)$('#crumb').textContent=pages[page];
   setPageTheme(page);
   if(page==='home')renderHome();if(page==='members')renderMembers();if(page==='friends'){loadFriends().then(renderFriends)}if(page==='chat')renderChat();
-  if(page==='private')renderPrivate();if(page==='leaderboard')renderLeaderboard();if(page==='settings')await renderSettings();
+  if(page==='private')renderPrivate();if(page==='dcserver')renderDCServer();if(page==='leaderboard')renderLeaderboard();if(page==='settings')await renderSettings();
   if(innerWidth<761)$('.sidebar')?.classList.remove('open');
 }
 document.addEventListener('click',e=>{
@@ -478,7 +493,7 @@ document.addEventListener('click',e=>{
   unblockFriend(btn.dataset.unblockFriend,btn);
 });
 $$('.nav').forEach(n=>n.onclick=()=>go(n.dataset.page));$('#mobileMenu').onclick=()=>$('.sidebar').classList.toggle('open');
-fetch('/api/me').then(r=>r.json()).then(async d=>{me=d.user;if(!me){renderTop();renderHome();setPageTheme('home');return}const m=await api('/api/members');members=m.members;try{friendsData=await api('/api/friends')}catch{}renderTop();renderHome();renderMembers();renderChat();renderPrivate();renderLeaderboard();renderSettings();connectSocket();setPageTheme('home');}).catch(console.error);
+fetch('/api/me').then(r=>r.json()).then(async d=>{me=d.user;if(!me){renderTop();renderHome();setPageTheme('home');return}const m=await api('/api/members');members=m.members;try{friendsData=await api('/api/friends')}catch{}renderTop();renderHome();renderMembers();renderChat();renderPrivate();renderDCServer();renderLeaderboard();renderSettings();connectSocket();setPageTheme('home');}).catch(console.error);
 fetch('/api/settings').then(r=>r.ok?r.json():null).then(d=>{if(d?.settings?.theme&&d.settings.theme!=='neon')document.body.classList.add(d.settings.theme)}).catch(()=>{});
 fetch('/api/config').then(r=>r.json()).then(c=>{
   config=c;

@@ -53,8 +53,10 @@ async function initDatabase() {
       last_seen TIMESTAMPTZ NOT NULL DEFAULT CURRENT_TIMESTAMP,
       discord_in_server BOOLEAN NOT NULL DEFAULT FALSE,
       discord_roles TEXT NOT NULL DEFAULT '[]',
+      discord_servers TEXT NOT NULL DEFAULT '[]',
       last_login_reward TEXT NOT NULL DEFAULT ''
     );
+    ALTER TABLE users ADD COLUMN IF NOT EXISTS discord_servers TEXT NOT NULL DEFAULT '[]';
     CREATE TABLE IF NOT EXISTS auth_tokens (
       token_hash TEXT PRIMARY KEY,
       user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
@@ -185,6 +187,7 @@ async function currentUser(req) {
 }
 async function publicUser(u) {
   const roles = (() => { try { return JSON.parse(u.discord_roles || '[]'); } catch { return []; } })();
+  const discordServers = (() => { try { return JSON.parse(u.discord_servers || '[]'); } catch { return []; } })();
   const messageCount = (await db.get('SELECT COUNT(*)::int AS count FROM public_messages WHERE user_id=$1', [u.id])).count;
   const level = levelFromXP(u.xp);
   const start = levelStartXP(level);
@@ -192,7 +195,7 @@ async function publicUser(u) {
   return {
     id: u.id, username: u.username, global_name: u.global_name, avatar: u.avatar,
     role: u.role, discord_id: u.discord_id, discord_in_server: Boolean(u.discord_in_server),
-    discord_roles: roles, bio: u.bio, xp: u.xp, level, level_start_xp: start,
+    discord_roles: roles, discord_servers: discordServers, bio: u.bio, xp: u.xp, level, level_start_xp: start,
     level_next_xp: next, level_progress: Math.min(100, Math.max(0, ((u.xp - start) / (next - start)) * 100)),
     points: u.points, message_count: messageCount, games_played: u.games_played || 0, wins: u.wins || 0,
     last_seen: u.last_seen, created_at: u.created_at
@@ -222,6 +225,12 @@ app.get('/api/config', (req, res) => res.json({
   adminConfigured: Boolean(process.env.DISCORD_ADMIN_IDS)
 }));
 app.get('/api/me', async (req, res) => { const u = await currentUser(req); res.json({ user: u ? await publicUser(u) : null }); });
+app.get('/api/discord-servers', requireUser, async (req, res) => {
+  const u = await db.get('SELECT discord_servers FROM users WHERE id=$1', [req.user.id]);
+  let servers = [];
+  try { servers = JSON.parse(u?.discord_servers || '[]'); } catch {}
+  res.json({ servers: Array.isArray(servers) ? servers : [] });
+});
 app.get('/api/members', async (req, res) => {
   const users = await db.all('SELECT * FROM users ORDER BY xp DESC, username ASC');
   res.json({ members: await getPublicUsers(users) });
@@ -527,7 +536,7 @@ app.get('/auth/discord', (req, res) => {
   if (!process.env.DISCORD_CLIENT_ID || !process.env.DISCORD_CLIENT_SECRET || !process.env.DISCORD_REDIRECT_URI) return res.status(500).send('Discord OAuth ist noch nicht vollständig konfiguriert.');
   const state = crypto.randomBytes(20).toString('hex');
   res.cookie('zf_oauth_state', state, { httpOnly: true, secure: process.env.NODE_ENV === 'production', sameSite: 'lax', maxAge: 10 * 60 * 1000 });
-  const params = new URLSearchParams({ client_id: process.env.DISCORD_CLIENT_ID, response_type: 'code', redirect_uri: process.env.DISCORD_REDIRECT_URI, scope: 'identify', state });
+  const params = new URLSearchParams({ client_id: process.env.DISCORD_CLIENT_ID, response_type: 'code', redirect_uri: process.env.DISCORD_REDIRECT_URI, scope: 'identify guilds', state });
   res.redirect(`https://discord.com/oauth2/authorize?${params}`);
 });
 app.get('/auth/discord/callback', async (req, res) => {
@@ -540,13 +549,25 @@ app.get('/auth/discord/callback', async (req, res) => {
     const userRes = await fetch('https://discord.com/api/users/@me', { headers: { Authorization: `Bearer ${token.access_token}` } });
     if (!userRes.ok) throw new Error('User request failed');
     const d = await userRes.json();
+    const guildRes = await fetch('https://discord.com/api/users/@me/guilds', { headers: { Authorization: `Bearer ${token.access_token}` } });
+    let discordServers = [];
+    if (guildRes.ok) {
+      const guilds = await guildRes.json();
+      discordServers = Array.isArray(guilds) ? guilds.map(g => ({
+        id: String(g.id),
+        name: String(g.name || 'Unbekannter Server'),
+        icon: g.icon ? `https://cdn.discordapp.com/icons/${g.id}/${g.icon}.png?size=128` : '',
+        owner: Boolean(g.owner),
+        permissions: String(g.permissions || '')
+      })) : [];
+    }
     const avatar = d.avatar ? `https://cdn.discordapp.com/avatars/${d.id}/${d.avatar}.png?size=256` : `https://cdn.discordapp.com/embed/avatars/${Number(d.discriminator || 0) % 5}.png`;
     let u = await db.get('SELECT * FROM users WHERE discord_id=$1', [d.id]);
     if (!u) {
-      const info = await db.get('INSERT INTO users(discord_id,username,global_name,avatar) VALUES($1,$2,$3,$4) RETURNING id', [d.id, d.username, d.global_name || d.username, avatar]);
+      const info = await db.get('INSERT INTO users(discord_id,username,global_name,avatar,discord_servers) VALUES($1,$2,$3,$4,$5) RETURNING id', [d.id, d.username, d.global_name || d.username, avatar, JSON.stringify(discordServers)]);
       u = await db.get('SELECT * FROM users WHERE id=$1', [info.id]);
     } else {
-      await db.run('UPDATE users SET username=$1,global_name=$2,avatar=$3,last_seen=CURRENT_TIMESTAMP WHERE id=$4', [d.username, d.global_name || d.username, avatar, u.id]);
+      await db.run('UPDATE users SET username=$1,global_name=$2,avatar=$3,discord_servers=$4,last_seen=CURRENT_TIMESTAMP WHERE id=$5', [d.username, d.global_name || d.username, avatar, JSON.stringify(discordServers), u.id]);
       u = await db.get('SELECT * FROM users WHERE id=$1', [u.id]);
     }
     const discordMember = await syncDiscordMember(d.id);
